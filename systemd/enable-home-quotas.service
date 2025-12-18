@@ -1,0 +1,17 @@
+[Unit]
+Description=Enable ext4 user quotas on /home
+After=mount-ebs-volumes.service
+Requires=mount-ebs-volumes.service
+Before=jupyterhub.service
+
+ConditionPathIsMountPoint=/home
+ConditionPathExists=/usr/local/sbin/enable-home-quotas.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/enable-home-quotas.sh
+EnvironmentFile=-/home/jupyterhub/etc/quotas.env
+
+[Install]
+WantedBy=multi-user.target

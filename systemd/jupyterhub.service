@@ -1,0 +1,30 @@
+[Unit]
+Description=JupyterHub (per-release venv under /home/jupyterhub/current)
+After=network-online.target mount-ebs-volumes.service enable-home-quotas.service
+Requires=mount-ebs-volumes.service enable-home-quotas.service
+Wants=network-online.target
+
+# Don't try to start until a release has been deployed
+ConditionPathIsDirectory=/home/jupyterhub/current
+ConditionPathExists=/home/jupyterhub/current/etc/jupyterhub_config.py
+ConditionPathExists=/home/jupyterhub/current/bin/bootstrap-jupyterhub.sh
+
+# Limit restart attempts
+StartLimitIntervalSec=30
+StartLimitBurst=1
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/jupyterhub/current
+Environment=JUPYTERHUB_RUNTIME_DIR=/home/jupyterhub/state/pid
+EnvironmentFile=/home/jupyterhub/etc/jupyterhub.env
+ExecStartPre=/home/jupyterhub/current/bin/bootstrap-jupyterhub.sh
+ExecStart=/home/jupyterhub/current/venv/bin/jupyterhub -f /home/jupyterhub/current/etc/jupyterhub_config.py
+
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

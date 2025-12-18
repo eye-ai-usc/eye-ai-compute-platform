@@ -1,0 +1,14 @@
+# Python / venv
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Runtime state (never tracked)
+state/
+
+# OS/editor junk
+.DS_Store
+.idea/
+.vscode/
+/etc/jupyterhub.env
