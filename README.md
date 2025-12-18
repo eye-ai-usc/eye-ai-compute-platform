@@ -54,7 +54,7 @@ The primary goal is **easy DLAMI upgrades** with **zero data loss** and **minima
         ├── jupyterhub.sqlite
         ├── jupyterhub_cookie_secret
         ├── pid/
-        └── logs/
+        ├── logs/
         └── user-venv/
 ```
 
