@@ -27,10 +27,6 @@ if ! mountpoint -q /data; then
 fi
 
 echo ""
-echo "[install-all] Installing Python prerequisites..."
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-echo ""
 echo "[install-all] Installing grant-sudo helper..."
 install -m 0755 "$ROOT_DIR/bin/grant-sudo.sh" /usr/local/sbin/grant-sudo
 
