@@ -1,0 +1,21 @@
+[Unit]
+Description=Update JupyterHub environment (per-release, relaxed mode)
+Documentation=https://github.com/eye-ai-usc/eye-ai-compute-platform
+After=network-online.target
+Wants=network-online.target
+
+# Only run if a release is deployed
+ConditionPathIsDirectory=/home/jupyterhub/current
+ConditionPathExists=/home/jupyterhub/current/bin/bootstrap-jupyterhub.sh
+
+[Service]
+Type=oneshot
+
+# Relaxed mode: best-effort upgrades, never fatal
+Environment=BOOTSTRAP_MODE=relaxed
+
+WorkingDirectory=/home/jupyterhub/current
+ExecStart=/home/jupyterhub/current/bin/bootstrap-jupyterhub.sh
+ExecStartPost=/bin/bash -c 'if [ -f /home/jupyterhub/state/NEEDS_RESTART ]; then rm -f /home/jupyterhub/state/NEEDS_RESTART && systemctl try-restart jupyterhub.service; fi'
+# Never restart automatically; retries are timer-driven
+Restart=no

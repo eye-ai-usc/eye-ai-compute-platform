@@ -11,7 +11,7 @@ This repository provides a host-native JupyterHub deployment for AWS DLAMI insta
 * per-release, revertable JupyterHub installs
 * Globus authentication with automatic UNIX user provisioning
 
-The primary goal is **easy DLAMI upgrades** with **zero data loss** and **minimal moving parts**.
+The primary goal is **easy DLAMI upgrades** with **zero data loss**, **explicit updates**, and **minimal moving parts**.
 
 ---
 
@@ -33,6 +33,12 @@ The primary goal is **easy DLAMI upgrades** with **zero data loss** and **minima
    * Each release is a full copy of the repo
    * Python dependencies live in a per-release virtualenv
    * Switching releases is a symlink flip + service restart
+
+4. **Bootstrap and updates are explicit**
+
+   * Clean systems bootstrap strictly
+   * Existing systems do not mutate on restart
+   * Updates run only via a timer or manual invocation
 
 ---
 
@@ -68,7 +74,9 @@ The primary goal is **easy DLAMI upgrades** with **zero data loss** and **minima
 /etc/systemd/system/
 ├── mount-ebs-volumes.service
 ├── enable-home-quotas.service
-└── jupyterhub.service
+├── jupyterhub.service
+├── jupyterhub-update.service
+└── jupyterhub-update.timer
 ```
 
 All rootfs files are installed from this repo via installer scripts.
@@ -141,7 +149,7 @@ This is enforced via `Requires=`, `After=`, and `ConditionPath*`.
     # 80/100 GiB in KiB:
     QUOTA_SOFT_KIB=83886080
     QUOTA_HARD_KIB=104857600
-    
+
     # Optional:
     # APPLY_EXISTING_USERS=0
     # HOME_QUOTA_FS=/home
@@ -160,16 +168,39 @@ This is enforced via `Requires=`, `After=`, and `ConditionPath*`.
 * Runs on host
 * Uses per-release venv
 * Uses shared state directory
-* Limited to **one restart attempt** on failure
+* Retries startup on transient failure (bounded)
 
 **Bootstrap behavior**
 
-* `ExecStartPre` runs `bin/bootstrap-jupyterhub.sh`
-* Ensures:
+* `ExecStartPre` runs `bin/bootstrap-jupyterhub.sh` in **strict mode**
+* On a clean system:
+  * creates venvs
+  * installs required Python packages
+* On an existing system:
+  * performs validation only
+  * **does not upgrade packages**
 
-  * venv exists
-  * hub packages installed
-  * cookie secret present
+---
+
+### 4. `jupyterhub-update.service` + `.timer`
+
+**Purpose**
+
+* Perform **explicit**, best-effort upgrades of Python dependencies
+
+**Behavior**
+
+* Runs the same bootstrap script in **relaxed mode**
+* Does **not** affect JupyterHub availability
+* Can be:
+  * triggered manually
+  * run automatically on a weekly schedule
+
+**Manual invocation**
+
+```bash
+systemctl start jupyterhub-update
+```
 
 ---
 
@@ -253,7 +284,7 @@ Cloning as root avoids permission problems when deploying releases into
 From the root shell:
 
 ```bash
-./bin/install-all.sh
+./bin/install-all.sh 2>&1 | tee install-all.log
 ```
 
 This command will:
@@ -262,7 +293,7 @@ This command will:
 2. Mount `/home` and `/data` from EBS
 3. Enable and verify ext4 user quotas on `/home`
 4. Deploy JupyterHub into `/home/jupyterhub/releases/<timestamp>`
-5. Enable and start all required systemd services
+5. Install and enable JupyterHub and update services
 
 ---
 
@@ -291,16 +322,16 @@ Verify services:
 systemctl status mount-ebs-volumes.service
 systemctl status enable-home-quotas.service
 systemctl status jupyterhub
+systemctl status jupyterhub-update.timer
 ```
 
-JupyterHub should now be reachable at:
+JupyterHub should be reachable at:
 
 ```
 https://host/
 ```
 
 ---
-
 
 ## Deploying a New Release
 
@@ -324,8 +355,7 @@ This will:
 Example output:
 
 ```bash
-Rollback (copy/paste):
-  sudo ln -sfn /home/jupyterhub/releases/20250101T120000Z /home/jupyterhub/current \
+sudo ln -sfn /home/jupyterhub/releases/<timestamp> /home/jupyterhub/current \
   && sudo systemctl restart jupyterhub
 ```
 
@@ -334,6 +364,7 @@ Rollback restores:
 * code
 * configuration
 * Python dependencies
+* update behavior
 
 User data and state are untouched.
 
@@ -371,6 +402,7 @@ ADMIN_GROUPS=uuid3
 systemctl status mount-ebs-volumes.service
 systemctl status enable-home-quotas.service
 systemctl status jupyterhub
+systemctl status jupyterhub-update.service
 ```
 
 ### Logs
@@ -379,6 +411,7 @@ systemctl status jupyterhub
 journalctl -u mount-ebs-volumes.service
 journalctl -u enable-home-quotas.service
 journalctl -u jupyterhub
+journalctl -u jupyterhub-update.service
 ```
 
 ### Common issues
@@ -390,7 +423,7 @@ journalctl -u jupyterhub
   * `/home` is mounted
   * quotas are enabled
   * `/home/jupyterhub/current` exists
-* The service will **fail cleanly** if any prerequisite is missing
+* The service will **retry for transient failures** and **fail cleanly** for real configuration errors
 
 #### Users get logged out on restart
 

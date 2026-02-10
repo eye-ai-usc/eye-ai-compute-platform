@@ -1,0 +1,12 @@
+[Unit]
+Description=Weekly JupyterHub environment update (per-release)
+
+[Timer]
+# Weekly, early Sunday morning
+OnCalendar=Sun *-*-* 01:00:00
+
+# Run missed updates after reboot
+Persistent=true
+
+[Install]
+WantedBy=timers.target

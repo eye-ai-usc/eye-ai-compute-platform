@@ -115,6 +115,41 @@ migrate_existing_home_into_home_dev() {
   echo "Migration completed."
 }
 
+# This helper tries to mount /opt/dlami/nvme using any existing fstab entry,
+# and if a known LVM device exists, it will add a UUID-based fstab entry
+# and attempt to mount. It is intentionally conservative and does nothing
+# destructive.
+ensure_nvme_mount() {
+  local mnt="/opt/dlami/nvme"
+  local lv_dev="/dev/mapper/vg.01-lv_ephemeral"
+
+  mkdir -p "$mnt"
+
+  # If already mounted, nothing to do.
+  if mountpoint -q "$mnt"; then
+    return 0
+  fi
+
+  # Try mounting via fstab entry (if present)
+  mount "$mnt" >/dev/null 2>&1 || true
+  if mountpoint -q "$mnt"; then
+    return 0
+  fi
+
+  # If logical volume device exists, ensure fstab entry by UUID and mount it
+  if [[ -b "$lv_dev" ]]; then
+    local uuid
+    uuid=$(blkid -s UUID -o value "$lv_dev" 2>/dev/null || true)
+    if [[ -n "$uuid" ]]; then
+      if ! grep -q "UUID=${uuid}[[:space:]]\+${mnt}[[:space:]]" /etc/fstab; then
+        echo "UUID=${uuid}  ${mnt}  ext4  defaults  0  2" >> /etc/fstab
+      fi
+    fi
+    # Try mounting the mountpoint now (will use fstab entry if we added it)
+    mount "$mnt" >/dev/null 2>&1 || true
+  fi
+}
+
 echo "Preparing /home and /data mounts..."
 
 mkfs_if_needed "$HOME_DEV"
@@ -127,6 +162,7 @@ ensure_mount "$HOME_DEV" /home "defaults,nofail,usrquota"
 ensure_mount "$DATA_DEV" /data "defaults,nofail"
 
 setup_shared_perms
+ensure_nvme_mount
 setup_swap_nvme
 
 echo "Current mounts:"

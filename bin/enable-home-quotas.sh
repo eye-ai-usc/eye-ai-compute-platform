@@ -24,6 +24,9 @@ if ! mountpoint -q "${HOME_QUOTA_FS}"; then
   exit 1
 fi
 
+# ext4 may not expose usrquota immediately after mount; remount is safe and idempotent
+mount -o remount,usrquota "${HOME_QUOTA_FS}" 2>/dev/null || true
+
 if ! findmnt -no OPTIONS "${HOME_QUOTA_FS}" | tr ',' '\n' | grep -qx 'usrquota'; then
   echo "[quotas] ERROR: ${HOME_QUOTA_FS} is not mounted with usrquota."
   echo "[quotas] Fix /etc/fstab for ${HOME_QUOTA_FS} to include 'usrquota', then remount."

@@ -9,9 +9,9 @@ ConditionPathIsDirectory=/home/jupyterhub/current
 ConditionPathExists=/home/jupyterhub/current/etc/jupyterhub_config.py
 ConditionPathExists=/home/jupyterhub/current/bin/bootstrap-jupyterhub.sh
 
-# Limit restart attempts
-StartLimitIntervalSec=30
-StartLimitBurst=1
+# Allow retries for ~10 minutes, then stop and require attention
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -20,11 +20,18 @@ Group=root
 WorkingDirectory=/home/jupyterhub/current
 Environment=JUPYTERHUB_RUNTIME_DIR=/home/jupyterhub/state/pid
 EnvironmentFile=/home/jupyterhub/etc/jupyterhub.env
+
+# Strict bootstrap on service start (clean-system correctness)
 ExecStartPre=/home/jupyterhub/current/bin/bootstrap-jupyterhub.sh
+
+# Start JupyterHub from the per-release venv
 ExecStart=/home/jupyterhub/current/venv/bin/jupyterhub -f /home/jupyterhub/current/etc/jupyterhub_config.py
 
-Restart=on-failure
-RestartSec=3
+# JupyterHub should always retry if it crashes
+Restart=always
+RestartSec=5
+# Allow enough time for bootstrap on slow or fresh systems
+TimeoutStartSec=300
 
 [Install]
 WantedBy=multi-user.target

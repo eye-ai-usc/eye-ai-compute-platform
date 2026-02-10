@@ -1,7 +1,7 @@
 [Unit]
 Description=Enable ext4 user quotas on /home
 After=mount-ebs-volumes.service
-Requires=mount-ebs-volumes.service
+Wants=mount-ebs-volumes.service
 Before=jupyterhub.service
 
 ConditionPathIsMountPoint=/home

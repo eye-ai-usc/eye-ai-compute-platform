@@ -27,6 +27,10 @@ if ! mountpoint -q /data; then
 fi
 
 echo ""
+echo "[install-all] Installing Python prerequisites..."
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+echo ""
 echo "[install-all] Ensuring 'jupyterhub' system user exists..."
 
 # Optional: pin a UID/GID for stability when reusing EBS across instances
@@ -53,19 +57,25 @@ chmod 0750 /home/jupyterhub/etc || true
 chown -R jupyterhub:jupyter /home/jupyterhub/etc /home/jupyterhub/state /home/jupyterhub/releases || true
 
 if [[ ! -f /home/jupyterhub/etc/jupyterhub.env ]]; then
-  cat > /home/jupyterhub/etc/jupyterhub.env <<EOF
+  if [[ -f "$ROOT_DIR/etc/jupyterhub.env" ]]; then
+    echo "[install-all] Installing jupyterhub.env from repo template..."
+    cp "$ROOT_DIR/etc/jupyterhub.env" /home/jupyterhub/etc/jupyterhub.env
+  else
+    echo "[install-all] Creating default jupyterhub.env template..."
+    cat > /home/jupyterhub/etc/jupyterhub.env <<EOF
 # JupyterHub deployment environment (systemd EnvironmentFile)
-PUBLIC_HOSTNAME=https://${HOSTNAME}
+PUBLIC_HOSTNAME=${HOSTNAME}
 GLOBUS_CLIENT_ID=...
 GLOBUS_CLIENT_SECRET=...
 #ALLOWED_GROUPS=
 #ADMIN_GROUPS=
 EOF
+  fi
   chmod 0640 /home/jupyterhub/etc/jupyterhub.env || true
   if id jupyterhub >/dev/null 2>&1; then
     chown jupyterhub:jupyter /home/jupyterhub/etc/jupyterhub.env || true
   fi
-  echo "[install-all] Created template: /home/jupyterhub/etc/jupyterhub.env"
+  echo "[install-all] Installed: /home/jupyterhub/etc/jupyterhub.env"
 fi
 
 if [[ ! -f /home/jupyterhub/etc/quotas.env ]]; then

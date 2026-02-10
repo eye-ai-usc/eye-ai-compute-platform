@@ -35,12 +35,20 @@ fi
 # 3) Atomically switch current -> new release
 sudo ln -sfn "$NEW_RELEASE" "$CURRENT_LINK"
 
-# 4) Install/refresh ONLY the JupyterHub unit from the current release
+# Install/refresh JupyterHub-related systemd units from the current release
 # (mount + quota services are installed/enabled by install-mount-service.sh / install-quota-service.sh)
-sudo install -m 0644 "$CURRENT_LINK/systemd/jupyterhub.service" /etc/systemd/system/jupyterhub.service
+sudo install -m 0644 "$CURRENT_LINK/systemd/jupyterhub.service" \
+  /etc/systemd/system/jupyterhub.service
+
+sudo install -m 0644 "$CURRENT_LINK/systemd/jupyterhub-update.service" \
+  /etc/systemd/system/jupyterhub-update.service
+
+sudo install -m 0644 "$CURRENT_LINK/systemd/jupyterhub-update.timer" \
+  /etc/systemd/system/jupyterhub-update.timer
 
 sudo systemctl daemon-reload
 sudo systemctl enable jupyterhub
+sudo systemctl enable --now jupyterhub-update.timer
 sudo systemctl restart jupyterhub
 
 # 5) Emit status + helpers
