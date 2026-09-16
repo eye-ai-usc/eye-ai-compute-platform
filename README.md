@@ -223,49 +223,26 @@ Both paths default to the same 50/60 GiB and read `QUOTA_SOFT_KIB` /
 `QUOTA_HARD_KIB`. Change one and change the other, or a user's limit depends on
 whether a reboot or a spawn set it first.
 
-**Keeping caches out of the quota**
+**Keeping caches from eating the quota**
 
-`_pre_spawn_hook` also points `UV_CACHE_DIR` at
-`/opt/dlami/nvme/uv-cache/<user>`, a per-user directory on the instance-store
-NVMe. `uv`'s cache grows without bound as people build environments, and in a
-home directory it counts against the quota -- it accounted for 24 GB of one
-user's 132 GB.
+`uv`'s cache grows without bound as environments are built, and it lives in the
+quota'd home directory -- it reached 27 GB for one user here.
+`prune-uv-caches.timer` runs weekly, Sundays at 03:00, two hours after the
+JupyterHub update so the two never contend for the volume's IOPS. It runs
+`uv cache prune` for every user with a `~/.cache/uv`, which removes only
+unreachable entries and so never breaks an environment somebody still has. Run it
+on demand with `systemctl start prune-uv-caches`.
 
-A build cache is regenerable, so the instance store suits it: faster than the EBS
-home volume, outside the quota, and wiped on stop/start, which for a cache is
-correct rather than a drawback. If `/opt/dlami/nvme` is not mounted the variable
-is left unset and `uv` falls back to `~/.cache/uv`, which works but is counted.
+Expect less than the directory's apparent size. `uv` hardlinks from its cache
+into venv `site-packages`, so anything a live environment still references
+survives -- the space simply stops being attributed to the cache. A first prune
+here recovered 10 GiB from a user whose cache measured 27 GB.
 
-Existing caches are not migrated. A user who already has `~/.cache/uv` keeps
-paying for it until they clear it:
-
-```bash
-sudo -u <user> env HOME=/home/<user> uv cache clean
-```
-
-Note that `uv` hardlinks from its cache into venv `site-packages`, so clearing
-frees only what no live environment still references.
-
-**The trade this makes.** Moving caches off `/home` moves them off a quota'd
-filesystem onto an unquota'd one, so one user filling the scratch volume breaks
-`uv` for everyone rather than hitting their own limit. The failure is mild --
-`uv` returns `ENOSPC`, nothing is lost, and clearing a cache fixes it -- but it
-is shared, so two things bound it:
-
-* `system-status` reports scratch usage on every login and raises an ATTENTION
-  block past `SCRATCH_WARN_PCT` (default 85)
-* `prune-uv-caches.timer` runs weekly, Sundays at 03:00, two hours after the
-  JupyterHub update so the two never contend for the volume's IOPS
-
-`uv cache prune` removes only unreachable entries, so it never breaks an
-environment a user still has -- which is what makes it safe unattended. Run it on
-demand with `systemctl start prune-uv-caches`.
-
-The rigorous fix would be quota on the scratch volume itself. It is ext4, so
-`usrquota` applies, but the instance store is new hardware after every
-stop/start and the UUID changes with it, so the quota setup would have to be
-re-established each boot alongside `ensure_nvme_mount`. Worth doing only if
-contention becomes real.
+Moving the cache to the instance-store volume was tried and reverted. It takes
+the cache off the quota, but a cache on a different filesystem can no longer be
+hardlinked into venvs, so every environment gets full copies instead. For a user
+with three ML venvs that cost more than it saved, and it added a shared,
+unquota'd volume one person could fill for everyone.
 
 **Checking enforcement**
 

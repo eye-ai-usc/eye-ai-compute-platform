@@ -30,12 +30,9 @@ STATE_DIR="/var/lib/eye-ai-compute"
 FAILURE_LOG="${STATE_DIR}/failures.log"
 ACK_MARKER="${STATE_DIR}/failures.acked"
 
-# Instance-store scratch. Reported because it holds the per-user uv caches, which
-# are not quota'd: unlike a home directory, one user filling this breaks builds
-# for everyone. Better to see it climbing at login than to find out when uv
-# starts failing.
+# Instance-store scratch. Reported because it is the fast local volume users are
+# pointed at for working data, and because the swapfile lives on it.
 SCRATCH_DIR="${SCRATCH_DIR:-/opt/dlami/nvme}"
-SCRATCH_WARN_PCT="${SCRATCH_WARN_PCT:-85}"
 
 usage() {
 	cat <<'EOF'
@@ -145,16 +142,6 @@ report() {
 			printf '  Newest: %s\n' "$newest"
 			printf '  A failed activation leaves its staged release behind.\n'
 		fi
-	fi
-
-	# The uv caches under here are shared and unquota'd, so a full volume is
-	# everyone's problem rather than one user's.
-	if [[ -n "$scratch_pct" ]] && (( scratch_pct >= SCRATCH_WARN_PCT )); then
-		shown=1
-		printf '\n%sATTENTION: scratch volume %s%% full%s\n' "$red" "$scratch_pct" "$off"
-		printf '  %s holds the per-user uv caches and is not quota-limited.\n' "$SCRATCH_DIR"
-		printf '  Largest: du -sh %s/uv-cache/* | sort -h | tail\n' "$SCRATCH_DIR"
-		printf '  Reclaim: systemctl start prune-uv-caches\n'
 	fi
 
 	if (( shown == 1 )); then

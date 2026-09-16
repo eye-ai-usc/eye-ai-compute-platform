@@ -1,61 +1,58 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Prune every user's uv cache on the instance-store scratch volume.
+# Prune every user's uv cache.
 #
-# jupyterhub_config.py points UV_CACHE_DIR at <scratch>/uv-cache/<user>, which
-# keeps build caches out of quota'd home directories. The cost of that is a
-# shared, unquota'd volume: one user filling it breaks uv for everyone. This
-# bounds the growth.
+# uv's cache grows without bound as environments are built, and it lives in the
+# quota'd home directory: it was 27 GB for one user here. `uv cache prune`
+# removes unreachable entries only, so it never breaks an environment somebody
+# still has -- which is what makes it safe to run unattended. On this host a
+# first prune recovered 10 GiB from a single user.
 #
-# `uv cache prune` removes unreachable entries only, so it never breaks an
-# environment a user still has -- unlike clearing the cache outright. That makes
-# it safe to run unattended.
+# Expect less than the directory's apparent size. uv hardlinks from its cache
+# into venv site-packages, so anything a live environment still references
+# survives; the space simply stops being attributed to the cache.
 #
 # Environment:
-#   SCRATCH_DIR  instance-store mount (default /opt/dlami/nvme)
-#   UV_BIN       uv executable (default the single-user venv's)
+#   HOME_FS  filesystem holding user homes (default /home), reported before/after
+#   UV_BIN   uv executable (default the single-user venv's)
 
-SCRATCH_DIR="${SCRATCH_DIR:-/opt/dlami/nvme}"
-UV_CACHE_ROOT="${SCRATCH_DIR}/uv-cache"
+HOME_FS="${HOME_FS:-/home}"
 UV_BIN="${UV_BIN:-/home/jupyterhub/state/user-venv/bin/uv}"
 
-log() { echo "[prune-uv-caches] $*"; }
+# uv walks up from the working directory looking for uv.toml / pyproject.toml.
+# Run from a directory every user can traverse: started from somewhere like
+# another user's home it fails with EACCES before it ever reaches the cache, and
+# a project config found on the way up could redirect cache-dir and defeat the
+# explicit UV_CACHE_DIR below.
+cd / || exit 1
 
-if [[ ! -d "$UV_CACHE_ROOT" ]]; then
-	log "no cache root at $UV_CACHE_ROOT; nothing to do"
-	exit 0
-fi
+log() { echo "[prune-uv-caches] $*"; }
 
 if [[ ! -x "$UV_BIN" ]]; then
 	log "ERROR: no uv at $UV_BIN"
 	exit 1
 fi
 
-before="$(df -h --output=avail "$SCRATCH_DIR" 2>/dev/null | tail -1 | tr -d ' ')"
-log "free before: ${before:-unknown}"
+before="$(df -h --output=avail "$HOME_FS" 2>/dev/null | tail -1 | tr -d ' ')"
+log "free on ${HOME_FS} before: ${before:-unknown}"
 
 pruned=0
 skipped=0
-for dir in "$UV_CACHE_ROOT"/*; do
-	[[ -d "$dir" ]] || continue
-	user="$(basename "$dir")"
+while IFS=: read -r user _ uid _ _ home _; do
+	[[ "$uid" -ge 1000 ]] || continue
+	[[ "$home" == "${HOME_FS}"/* ]] || continue
 
-	# A cache whose owner no longer exists is left alone rather than deleted:
-	# removing another account's data unattended is not this script's call.
-	if ! id -u "$user" >/dev/null 2>&1; then
-		log "WARNING: $dir has no matching user; leaving it"
-		skipped=$((skipped + 1))
-		continue
-	fi
+	cache="${home}/.cache/uv"
+	[[ -d "$cache" ]] || continue
 
-	if sudo -u "$user" env "UV_CACHE_DIR=$dir" "$UV_BIN" cache prune >/dev/null 2>&1; then
+	if sudo -u "$user" env "HOME=$home" "UV_CACHE_DIR=$cache" "$UV_BIN" cache prune >/dev/null 2>&1; then
 		pruned=$((pruned + 1))
 	else
-		log "WARNING: prune failed for $user"
+		log "WARNING: prune failed for ${user}"
 		skipped=$((skipped + 1))
 	fi
-done
+done < /etc/passwd
 
-after="$(df -h --output=avail "$SCRATCH_DIR" 2>/dev/null | tail -1 | tr -d ' ')"
-log "pruned ${pruned} cache(s), skipped ${skipped}; free after: ${after:-unknown}"
+after="$(df -h --output=avail "$HOME_FS" 2>/dev/null | tail -1 | tr -d ' ')"
+log "pruned ${pruned} cache(s), skipped ${skipped}; free on ${HOME_FS} after: ${after:-unknown}"
