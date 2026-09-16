@@ -86,7 +86,9 @@ report() {
 	release="$(basename "$(readlink -f /home/jupyterhub/current 2>/dev/null || echo unknown)")"
 	nextrun="$(systemctl list-timers jupyterhub-update.timer --no-legend 2>/dev/null | awk '{print $1, $2, $3, $4}')"
 
-	printf '%s\n' "$RULE"
+	# Leading blank line so the top rule does not butt against the closing rule
+	# of whatever printed before, usually the DLAMI banner at 99-motd.
+	printf '\n%s\n' "$RULE"
 	printf 'JupyterHub version: %s\n' "$version"
 	if [[ "$state" == "active" ]]; then
 		printf 'Service state: active since %s\n' "${since:-unknown}"
