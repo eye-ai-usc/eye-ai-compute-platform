@@ -48,6 +48,20 @@ REPORT="$(
 echo "$SUBJECT"
 echo "$REPORT"
 
+# Record it durably too. systemctl --failed forgets a unit on reset-failed or
+# reboot; this file is what the login banner reads, so a failure stays visible
+# until somebody acknowledges it. Capped so it cannot grow without bound.
+STATE_DIR="/var/lib/eye-ai-compute"
+FAILURE_LOG="${STATE_DIR}/failures.log"
+if mkdir -p "$STATE_DIR" 2>/dev/null; then
+	echo "${WHEN}  ${UNIT}" >> "$FAILURE_LOG" 2>/dev/null || true
+	if [[ "$(wc -l < "$FAILURE_LOG" 2>/dev/null || echo 0)" -gt 200 ]]; then
+		if tail -n 200 "$FAILURE_LOG" > "${FAILURE_LOG}.tmp" 2>/dev/null; then
+			mv "${FAILURE_LOG}.tmp" "$FAILURE_LOG" 2>/dev/null || true
+		fi
+	fi
+fi
+
 deliver_command() {
 	printf '%s\n\n%s\n' "$SUBJECT" "$REPORT" | sh -c "$JH_NOTIFY_COMMAND"
 }
@@ -64,12 +78,21 @@ deliver_email() {
 	fi
 }
 
+# Send a readable excerpt rather than the whole report: Slack caps message length
+# and renders a long one poorly. The full text is in this unit's journal either
+# way, since it is echoed above before any delivery is attempted.
 deliver_webhook() {
 	local payload
-	payload="$(python3 -c 'import json,sys; print(json.dumps({"text": sys.stdin.read()}))' \
-		<<<"${SUBJECT}"$'\n\n'"${REPORT}")" || return 1
-	curl -fsS --max-time 15 -X POST -H 'Content-Type: application/json' \
-		-d "$payload" "$JH_NOTIFY_WEBHOOK" >/dev/null
+	payload="$(python3 -c '
+import json, sys
+
+body = sys.stdin.read()
+limit = 3000
+if len(body) > limit:
+    body = body[:limit] + "\n\n[truncated -- full report: journalctl -u jupyterhub-failure-notify@*]"
+print(json.dumps({"text": body}))
+' <<<"${SUBJECT}"$'\n\n'"${REPORT}")" || return 1
+	curl -fsS --max-time 15 -X POST -H 'Content-Type: application/json' -d "$payload" "$JH_NOTIFY_WEBHOOK" >/dev/null
 }
 
 delivered=0

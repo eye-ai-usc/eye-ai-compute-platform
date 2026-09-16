@@ -1,19 +1,13 @@
 [Unit]
 Description=Mount EBS volumes for /home and /data (and optional swap setup)
 
-# Ordered AFTER local-fs.target, deliberately.
+# Ordered AFTER local-fs.target, deliberately. This unit's script checks whether
+# /home is already a mountpoint before deciding what to do, so it must not run
+# before the fstab mounts it depends on. Note that Wants= is a dependency, not an
+# ordering: dropping Before= without adding After= leaves the race in place and
+# only stops it blocking the boot.
 #
-# This unit used to run Before=local-fs.target with DefaultDependencies=no,
-# which raced the fstab mounts it depends on. On 2026-09-15 the race was lost:
-# /home was not yet a mountpoint when the script checked, so it entered the
-# one-time home-migration path and rsynced a 353 GB volume against itself for
-# 8m41s while every other unit -- cloud-init, sshd, everything -- waited behind
-# local-fs.target. The host was unreachable for nine minutes.
-#
-# Note that Wants= is a dependency, not an ordering. Dropping Before= without
-# adding After= leaves the race in place; it just stops blocking the boot.
-#
-# Everything this script needs (/home, /data, /opt/dlami/nvme) is mounted from
+# Everything the script needs (/home, /data, /opt/dlami/nvme) is mounted from
 # fstab by UUID, so running afterwards is both correct and race-free. On a fresh
 # instance fstab has no entries yet, local-fs.target completes without them, and
 # this unit then creates them -- which is why jupyterhub.service declares
@@ -33,10 +27,10 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/mount-ebs-volumes.sh
 
-# Type=oneshot defaults to TimeoutStartSec=infinity. Without an explicit bound,
-# any hang in the script blocks boot forever with no recovery path except the
-# serial console. Fail loudly instead; the unit is pulled in by a Wants, so a
-# failure leaves a reachable host with one failed service.
+# Type=oneshot defaults to TimeoutStartSec=infinity. Without an explicit bound, a
+# hang blocks boot forever with no recovery path except the serial console. Fail
+# loudly instead; the unit is pulled in by a Wants, so a failure leaves a
+# reachable host with one failed service.
 TimeoutStartSec=300
 
 [Install]

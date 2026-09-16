@@ -1,32 +1,30 @@
-# Single-user server packages, installed into /home/jupyterhub/state/user-venv.
+# Single-user venv at /home/jupyterhub/state/user-venv.
 #
-# IMPORTANT: this venv lives under state/, not under a release. It is shared
-# across releases, so a release rollback does NOT roll these packages back. If
-# the hub is healthy but notebooks misbehave after an update, this is the place
-# to look, and reverting means reinstalling here explicitly from a freeze in
-# /home/jupyterhub/state/backups/pip-freeze-user-<timestamp>.txt.
+# This lives under state/, not under a release, so it is shared by every user and
+# every release and no rollback can revert it. activate-release.sh updates it
+# last, only once a release is verified serving, and never during a build that
+# might be discarded. To revert by hand, reinstall from a freeze in
+# state/backups/pip-freeze-user-<timestamp>.txt.
 #
-# Minor-level bounds (~=X.Y) for the same reason as the hub requirements: the
-# weekly timer may deliver patches and minor releases unattended, but never a
-# major bump.
+# Nothing here is what users actually run. The notebook server and the default
+# python3 kernel both come from the hub venv; this venv supplies VIRTUAL_ENV and
+# the front of PATH for terminals and subprocesses, so these packages are the
+# `jupyter` CLIs a shell picks up. That is why minor bounds are fine here while
+# the user-facing entries in requirements-hub.txt are patch-only.
 #
-# This venv provides only the notebook server and the default python3 kernel.
-# Users build their own environments and register their own kernels (typically
-# into ~/.local/share/jupyter/kernels), so PyTorch, TensorFlow and CUDA wheels
-# deliberately do not belong here -- they would be installed once, shared by
-# everyone, and impossible for any one user to version independently.
+# Note the decoy: this venv also contains share/jupyter/kernels/python3, which is
+# NOT on the server's kernel search path (that is ~<user>/.local/share, then the
+# hub venv's, then /usr/local and /usr). Only a terminal's `jupyter` CLI sees it,
+# which is why `jupyter kernelspec list` from a notebook shell reports a kernel
+# the server never uses.
 #
-# Versions below were taken from the running host on 2026-09-15.
+# Framework packages deliberately do not belong here: they would be installed
+# once, shared by everyone, and impossible for any one user to version
+# independently. Users build their own environments and register their own
+# kernels under ~/.local/share/jupyter/kernels.
+#
+# ipykernel arrives transitively and is not pinned, since nothing depends on this
+# copy. The pin that matters is in requirements-hub.txt.
 
 jupyterlab~=4.6
 jupyter_server~=2.21
-
-# NOT the default kernel. Verified 2026-09-15: a notebook on the default python3
-# kernel reports sys.prefix = /home/jupyterhub/current/venv, so both the
-# notebook server (c.Spawner.cmd points into current/venv) and the default
-# kernel come from the hub venv. This venv supplies VIRTUAL_ENV and the front of
-# PATH for terminals and subprocesses, and holds a python3 kernelspec that the
-# server does not appear to use.
-#
-# ipykernel is left to arrive transitively here rather than pinned, since
-# nothing depends on this copy. The pin that matters is in requirements-hub.txt.

@@ -35,6 +35,14 @@ if [[ -z "$PUBLIC_HOSTNAME" ]]; then
   exit 1
 fi
 
+# Defaulted rather than required, so an env file predating this variable still
+# renders a valid Caddyfile. Let's Encrypt uses it for expiry notices.
+LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-isrd-support@isi.edu}"
+if [[ "$LETSENCRYPT_EMAIL" != *"@"* ]]; then
+  echo "[install-caddy] ERROR: LETSENCRYPT_EMAIL does not look like an address: $LETSENCRYPT_EMAIL"
+  exit 1
+fi
+
 # Basic sanity: reject schemes/paths (we want a bare host[:port])
 if [[ "$PUBLIC_HOSTNAME" == *"://"* || "$PUBLIC_HOSTNAME" == */* ]]; then
   echo "[install-caddy] ERROR: PUBLIC_HOSTNAME must be a bare hostname (optionally host:port)."
@@ -47,7 +55,7 @@ apt-get install -y caddy
 
 echo "[install-caddy] Writing $DST for host: $PUBLIC_HOSTNAME"
 install -d -m 0755 /etc/caddy
-sed "s/{{HOST}}/${PUBLIC_HOSTNAME}/g" "$TMPL" > "$DST"
+sed -e "s/{{HOST}}/${PUBLIC_HOSTNAME}/g" -e "s/{{LETSENCRYPT_EMAIL}}/${LETSENCRYPT_EMAIL}/g" "$TMPL" > "$DST"
 
 echo "[install-caddy] Validating Caddyfile..."
 caddy fmt --overwrite "$DST"

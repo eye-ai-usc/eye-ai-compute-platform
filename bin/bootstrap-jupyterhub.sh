@@ -110,9 +110,8 @@ record_freeze() {
 }
 
 # Back up the hub database, then bring its schema up to what the installed hub
-# expects. A JupyterHub major upgrade changes the schema and the hub refuses to
-# start until this runs; doing it here keeps the package upgrade and the
-# migration in the same step, which is what failed on 2026-09-06.
+# expects. JupyterHub changes the schema across releases and refuses to start
+# until this runs, so the package upgrade and the migration belong in one step.
 upgrade_db() {
   local ts backup
   if [[ "$JH_AUTO_UPGRADE_DB" != "1" && "$JH_AUTO_UPGRADE_DB" != "always" ]]; then
@@ -165,17 +164,11 @@ upgrade_db() {
   fi
 }
 
-# Per-run scratch directory for pip output.
-#
-# These used to be fixed paths under /tmp. Two bootstraps can run at once -- the
-# update service building a new release while jupyterhub.service runs its own
-# ExecStartPre bootstrap is the obvious case, two admins is the mundane one --
-# and they would clobber each other's files, so the grep that decides whether
-# packages actually changed could read the wrong run's output and either skip a
-# needed restart or record a misleading freeze.
-#
-# pip output still reaches the journal through tee, so deleting these on exit
-# costs no diagnostics.
+# Per-run scratch for pip output. Two bootstraps can run at once -- the update
+# service building a new release while jupyterhub.service runs its own
+# ExecStartPre bootstrap -- and a shared path would let the grep that decides
+# whether packages changed read the wrong run's output. Output still reaches the
+# journal through tee, so discarding these on exit costs no diagnostics.
 PIP_LOG_DIR="$(mktemp -d -t jupyterhub-bootstrap-XXXXXXXX)"
 trap 'rm -rf -- "$PIP_LOG_DIR"' EXIT
 

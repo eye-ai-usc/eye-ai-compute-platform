@@ -4,17 +4,15 @@ set -euo pipefail
 # Mount the EBS volumes backing /home and /data, set shared permissions, and
 # optionally set up swap on the instance-store NVMe.
 #
-# DESIGN RULES (learned the hard way on 2026-09-15)
+# DESIGN RULES
 #
 # 1. On an already-configured host this script must be a fast no-op. Everything
 #    it sets up is recorded in /etc/fstab by UUID and mounted by systemd before
 #    this unit runs. If it finds the mounts in place, it does nothing.
 #
 # 2. Nothing destructive or long-running happens without an explicit opt-in.
-#    mkfs and the one-time /home migration are both gated behind environment
-#    flags AND a sentinel file, because both used to be reachable from an
-#    ordinary boot. The migration once rsynced a 353 GB volume against itself
-#    for 8m41s while the whole boot waited behind it.
+#    mkfs and the one-time /home migration are gated behind environment flags
+#    and a sentinel, so neither is reachable from an ordinary boot.
 #
 # 3. Devices are identified by UUID wherever possible. Kernel names like
 #    /dev/nvme1n1 are not stable across boots, and this host has four NVMe

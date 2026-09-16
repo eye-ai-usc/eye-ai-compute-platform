@@ -3,7 +3,7 @@
 	servers :443 {
 		protocols h1 h2
 	}
-	email isrd-support@isi.edu
+	email {{LETSENCRYPT_EMAIL}}
 	#	acme_ca https://acme-staging-v02.api.letsencrypt.org/directory # uncomment this for testing to avoid rate limits
 }
 

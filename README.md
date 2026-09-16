@@ -79,7 +79,11 @@ release rollback. See [Rollback](#rollback) for the database and user-venv.
 /usr/local/sbin/
 ├── mount-ebs-volumes.sh
 ├── enable-home-quotas.sh
-└── jupyterhub-notify-failure.sh
+├── jupyterhub-notify-failure.sh
+└── system-status                 # report and acknowledge
+
+/etc/update-motd.d/
+└── 99-system-status -> /usr/local/sbin/system-status
 
 /etc/systemd/system/
 ├── mount-ebs-volumes.service
@@ -136,14 +140,16 @@ runs. If the mounts are in place, it does nothing.
 
 **Ordering**
 
-It runs `After=local-fs.target`, deliberately. It used to run
-`Before=local-fs.target`, which raced the fstab mounts it depends on. On
-2026-09-15 the race was lost: `/home` was not yet a mountpoint when the script
-checked, so it entered the one-time home-migration path and rsynced a 353 GB
-volume against itself for 8m41s while every other unit waited behind
-`local-fs.target`. The host was unreachable for nine minutes. `TimeoutStartSec=300`
-now bounds it, because `Type=oneshot` otherwise defaults to infinity and a hang
-has no recovery path except the serial console.
+It runs `After=local-fs.target`, deliberately. The script decides what to do by
+checking whether `/home` is already a mountpoint, so running before the fstab
+mounts would race the very thing it inspects. Ordering it before
+`local-fs.target` also puts it in front of every other unit, including sshd.
+
+Note that `Wants=` is a dependency, not an ordering. Removing `Before=` without
+adding `After=` leaves the race in place and only stops it blocking the boot.
+
+`TimeoutStartSec=300` bounds it, because `Type=oneshot` otherwise defaults to
+infinity and a hang has no recovery path except the serial console.
 
 **Safety flags**
 
@@ -155,10 +161,11 @@ an ordinary boot. Both are off by default and must be set explicitly:
 | `ALLOW_MKFS=1` | `mkfs.ext4 -F` on a device with no filesystem. Kernel names such as `/dev/nvme1n1` are **not** stable across boots -- this host has four NVMe controllers -- so an unattended format can hit the wrong disk. |
 | `ALLOW_HOME_MIGRATION=1` | The one-time rootfs `/home` -> EBS copy. Also requires an absent sentinel at `/var/lib/eye-ai-compute/home-migrated`, `/home` not already a mountpoint, and the target device not mounted anywhere else. |
 
-Run either by hand, once, after confirming the device:
+Run either by hand, once, after confirming the device. From a root shell -- a
+default sudoers policy rejects setting variables on a `sudo` command line:
 
 ```bash
-sudo ALLOW_MKFS=1 /usr/local/sbin/mount-ebs-volumes.sh
+ALLOW_MKFS=1 /usr/local/sbin/mount-ebs-volumes.sh
 ```
 
 **Script**
@@ -305,9 +312,10 @@ Package versions are bounded in `etc/requirements-hub.txt` and
 is a reviewed change: edit the requirements file, deploy with
 `install-jupyterhub-service.sh`, and validate a real login and spawn.
 
-Unbounded upgrades are how the 2026-09-06 outage happened: a weekly run crossed
-JupyterHub 5.x to 6.0.0, which changed the database schema, and the hub refused
-to start until the database was migrated.
+An unbounded upgrade lets a weekly run cross a major version unattended. That
+matters most for the database: JupyterHub changes its schema across releases and
+refuses to start until `jupyterhub upgrade-db` has run, which `activate-release.sh`
+handles as part of every activation.
 
 **Manual invocation**
 
@@ -366,6 +374,60 @@ sudo journalctl -u 'jupyterhub-failure-notify@*' -n 40 --no-pager
 **Source of truth**
 
 * `bin/notify-failure.sh` (in repo)
+
+### Login banner
+
+Delivery may be unconfigured, and the interesting case is a failure that
+*recovered*: the rollback worked, the hub serves, users notice nothing, and the
+only trace is in the journal. `/etc/update-motd.d/99-system-status` puts it in
+front of the next person to log in over SSH.
+
+`/usr/local/sbin/system-status` takes a command, defaulting to reporting:
+
+```bash
+system-status        # summary, plus anything needing attention
+system-status ack    # acknowledge what was reported
+```
+
+The symlink at `/etc/update-motd.d/99-system-status` exists only because
+`run-parts` needs a file in that directory. It passes no arguments, which is why
+reporting is the default.
+
+It always prints a summary -- hub version, active release, next scheduled
+update -- so that its absence means the banner itself is broken rather than the
+host being healthy. The version comes from the `dist-info` directory name rather
+than `jupyterhub --version`, which would start a Python interpreter before every
+login prompt.
+
+Below that, and only when there is something to say, it reports three things:
+
+| Signal | Why it is separate |
+|---|---|
+| Failed units (`systemctl --failed`) | Precise, but forgotten on `reset-failed` or reboot |
+| `state/failures.log` entries since the last acknowledgement | Written by the failure handler, so it survives both |
+| Newest release is not the active one | A failed activation leaves its staged release behind |
+
+Acknowledge recorded failures once they have been understood:
+
+```bash
+system-status ack
+```
+
+That marks the recorded log acknowledged, then names any units still in a failed
+state with the exact `journalctl` and `systemctl reset-failed` commands for each.
+It deliberately does **not** run `reset-failed` itself: systemd's failed-unit
+list is host-wide, and clearing it wholesale would discard the state of units
+this project does not manage, hiding a failure nobody has looked at yet.
+
+Underneath it is just a marker file, if you need it in a script:
+
+```bash
+touch /var/lib/eye-ai-compute/failures.acked
+```
+
+**Installed by** `install-jupyterhub-service.sh` from `bin/system-status.sh`.
+The motd symlink drops the extension because `run-parts --lsbsysinit` skips
+filenames containing dots.
 
 ---
 

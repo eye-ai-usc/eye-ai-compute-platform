@@ -8,12 +8,11 @@ set -euo pipefail
 # weekly update service uses the same script, so a deploy and an automatic
 # update follow identical, mutually exclusive code paths.
 #
-# The previous version of this script flipped the `current` symlink and then
-# restarted, leaving the venv to be built by ExecStartPre under
-# jupyterhub.service's 300s TimeoutStartSec. A slow build meant `current`
-# pointed at a release with no working venv, Restart=always flapped to the start
-# limit, and nothing reverted. It also armed the update timer before the restart,
-# so a Persistent=true catch-up run could collide with the deploy.
+# Two orderings matter here. The venv is built before the symlink moves, not by
+# ExecStartPre under jupyterhub.service's TimeoutStartSec, so a slow build cannot
+# leave `current` pointing at a release with no working venv. And the update
+# timer is armed last, after the hub is verified, so a Persistent=true catch-up
+# run cannot collide with the deploy.
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -60,6 +59,14 @@ sudo install -m 0644 "$NEW_RELEASE/systemd/jupyterhub-failure-notify@.service" \
 # handler still works when the release itself is what broke.
 sudo install -m 0755 "$NEW_RELEASE/bin/notify-failure.sh" \
   /usr/local/sbin/jupyterhub-notify-failure.sh
+
+# Status reporting. The motd symlink exists only because run-parts needs a file
+# in that directory; it passes no arguments, which is the reporting default.
+# --lsbsysinit skips filenames containing dots, hence the extensionless name.
+sudo install -m 0755 "$NEW_RELEASE/bin/system-status.sh" \
+  /usr/local/sbin/system-status
+sudo install -d -m 0755 /etc/update-motd.d
+sudo ln -sfn /usr/local/sbin/system-status /etc/update-motd.d/99-system-status
 
 sudo systemctl daemon-reload
 sudo systemctl enable jupyterhub

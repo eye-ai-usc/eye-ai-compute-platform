@@ -4,20 +4,15 @@ umask 022
 
 # Weekly (or manual) JupyterHub environment update.
 #
-# WHY THIS EXISTS
+# Stages a NEW release from the current release's source tree, builds a fresh
+# venv from the pinned requirements, and activates it only if the package set
+# actually changed. Upgrading the deployed release's venv in place would defeat
+# the per-release model: `current` would stop matching what was deployed, and a
+# symlink-flip rollback could not restore the previous package set.
 #
-# The previous implementation ran bootstrap-jupyterhub.sh with
-# BOOTSTRAP_MODE=relaxed directly against /home/jupyterhub/current, which
-# pip-upgraded the deployed release's venv in place. That defeated the
-# per-release model: after an update, `current` no longer contained what was
-# deployed, and the documented rollback (a symlink flip) could not restore the
-# previous package set.
-#
-# This stages a NEW release from the current release's source tree, builds a
-# fresh venv from the pinned requirements, and activates it only if the package
-# set actually changed. Everything dangerous -- migrating, flipping, restarting,
-# verifying, reverting -- lives in activate-release.sh, which the deploy script
-# also uses, so there is one implementation of it rather than two.
+# Everything dangerous -- migrating, flipping, restarting, verifying, reverting
+# -- lives in activate-release.sh, which the deploy script also uses, so there is
+# one implementation of it rather than two.
 #
 # Environment:
 #   JH_KEEP_RELEASES  releases to retain (default 5; current and previous are
