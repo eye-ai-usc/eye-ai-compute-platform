@@ -1,0 +1,14 @@
+[Unit]
+Description=Weekly prune of per-user uv caches
+
+[Timer]
+# Sunday 03:00, two hours after jupyterhub-update.timer, so a deploy and a cache
+# prune never contend for the volume's IOPS.
+OnCalendar=Sun *-*-* 03:00:00
+
+# Run a missed prune after a reboot. Unlike the JupyterHub update, a catch-up
+# here is harmless: it removes unreachable cache entries and touches nothing else.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

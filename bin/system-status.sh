@@ -30,6 +30,13 @@ STATE_DIR="/var/lib/eye-ai-compute"
 FAILURE_LOG="${STATE_DIR}/failures.log"
 ACK_MARKER="${STATE_DIR}/failures.acked"
 
+# Instance-store scratch. Reported because it holds the per-user uv caches, which
+# are not quota'd: unlike a home directory, one user filling this breaks builds
+# for everyone. Better to see it climbing at login than to find out when uv
+# starts failing.
+SCRATCH_DIR="${SCRATCH_DIR:-/opt/dlami/nvme}"
+SCRATCH_WARN_PCT="${SCRATCH_WARN_PCT:-85}"
+
 usage() {
 	cat <<'EOF'
 Usage: system-status [command]
@@ -98,6 +105,13 @@ report() {
 	printf 'Active release: %s\n' "$release"
 	[[ -n "$nextrun" ]] && printf 'Next scheduled update: %s\n' "$nextrun"
 
+	local scratch_pct scratch_free
+	scratch_pct="$(df --output=pcent "$SCRATCH_DIR" 2>/dev/null | tail -1 | tr -dc '0-9')"
+	scratch_free="$(df -h --output=avail "$SCRATCH_DIR" 2>/dev/null | tail -1 | tr -d ' ')"
+	if [[ -n "$scratch_pct" ]]; then
+		printf 'Scratch %s: %s%% used, %s free\n' "$SCRATCH_DIR" "$scratch_pct" "${scratch_free:-?}"
+	fi
+
 	local shown=0
 	local failed unit
 	failed="$(failed_units)"
@@ -131,6 +145,16 @@ report() {
 			printf '  Newest: %s\n' "$newest"
 			printf '  A failed activation leaves its staged release behind.\n'
 		fi
+	fi
+
+	# The uv caches under here are shared and unquota'd, so a full volume is
+	# everyone's problem rather than one user's.
+	if [[ -n "$scratch_pct" ]] && (( scratch_pct >= SCRATCH_WARN_PCT )); then
+		shown=1
+		printf '\n%sATTENTION: scratch volume %s%% full%s\n' "$red" "$scratch_pct" "$off"
+		printf '  %s holds the per-user uv caches and is not quota-limited.\n' "$SCRATCH_DIR"
+		printf '  Largest: du -sh %s/uv-cache/* | sort -h | tail\n' "$SCRATCH_DIR"
+		printf '  Reclaim: systemctl start prune-uv-caches\n'
 	fi
 
 	if (( shown == 1 )); then

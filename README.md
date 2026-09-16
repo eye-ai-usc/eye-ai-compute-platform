@@ -80,6 +80,7 @@ release rollback. See [Rollback](#rollback) for the database and user-venv.
 ├── mount-ebs-volumes.sh
 ├── enable-home-quotas.sh
 ├── jupyterhub-notify-failure.sh
+├── prune-uv-caches.sh
 └── system-status                 # report and acknowledge
 
 /etc/update-motd.d/
@@ -91,7 +92,9 @@ release rollback. See [Rollback](#rollback) for the database and user-venv.
 ├── jupyterhub.service
 ├── jupyterhub-update.service
 ├── jupyterhub-update.timer
-└── jupyterhub-failure-notify@.service
+├── jupyterhub-failure-notify@.service
+├── prune-uv-caches.service
+└── prune-uv-caches.timer
 ```
 
 The failure handler lives in `/usr/local/sbin` rather than inside a release, so
@@ -135,7 +138,7 @@ This is enforced via `Requires=`, `After=`, and `ConditionPath*`.
 * Create a swapfile on the instance-store NVMe
 
 **Swap sizing.** `SWAP_SIZE_GIB` (default 64) is a fixed size, not a fraction of
-the volume. `/opt/dlami/nvme` is also the shared scratch directory the DLAMI
+the volume. The space it leaves is what the per-user `uv` caches live in. `/opt/dlami/nvme` is also the shared scratch directory the DLAMI
 provides at mode 1777, and ext4 reserves 5% for root, so a swapfile sized as a
 large fraction of the total leaves non-root users **zero** bytes of scratch
 there. The script refuses to create one larger than 80% of the volume rather
@@ -219,6 +222,50 @@ touch /home/jupyterhub/state/quota-provisioned/<username>
 Both paths default to the same 50/60 GiB and read `QUOTA_SOFT_KIB` /
 `QUOTA_HARD_KIB`. Change one and change the other, or a user's limit depends on
 whether a reboot or a spawn set it first.
+
+**Keeping caches out of the quota**
+
+`_pre_spawn_hook` also points `UV_CACHE_DIR` at
+`/opt/dlami/nvme/uv-cache/<user>`, a per-user directory on the instance-store
+NVMe. `uv`'s cache grows without bound as people build environments, and in a
+home directory it counts against the quota -- it accounted for 24 GB of one
+user's 132 GB.
+
+A build cache is regenerable, so the instance store suits it: faster than the EBS
+home volume, outside the quota, and wiped on stop/start, which for a cache is
+correct rather than a drawback. If `/opt/dlami/nvme` is not mounted the variable
+is left unset and `uv` falls back to `~/.cache/uv`, which works but is counted.
+
+Existing caches are not migrated. A user who already has `~/.cache/uv` keeps
+paying for it until they clear it:
+
+```bash
+sudo -u <user> env HOME=/home/<user> uv cache clean
+```
+
+Note that `uv` hardlinks from its cache into venv `site-packages`, so clearing
+frees only what no live environment still references.
+
+**The trade this makes.** Moving caches off `/home` moves them off a quota'd
+filesystem onto an unquota'd one, so one user filling the scratch volume breaks
+`uv` for everyone rather than hitting their own limit. The failure is mild --
+`uv` returns `ENOSPC`, nothing is lost, and clearing a cache fixes it -- but it
+is shared, so two things bound it:
+
+* `system-status` reports scratch usage on every login and raises an ATTENTION
+  block past `SCRATCH_WARN_PCT` (default 85)
+* `prune-uv-caches.timer` runs weekly, Sundays at 03:00, two hours after the
+  JupyterHub update so the two never contend for the volume's IOPS
+
+`uv cache prune` removes only unreachable entries, so it never breaks an
+environment a user still has -- which is what makes it safe unattended. Run it on
+demand with `systemctl start prune-uv-caches`.
+
+The rigorous fix would be quota on the scratch volume itself. It is ext4, so
+`usrquota` applies, but the instance store is new hardware after every
+stop/start and the UUID changes with it, so the quota setup would have to be
+re-established each boot alongside `ensure_nvme_mount`. Worth doing only if
+contention becomes real.
 
 **Checking enforcement**
 

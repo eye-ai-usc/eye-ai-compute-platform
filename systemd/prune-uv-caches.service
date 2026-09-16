@@ -1,0 +1,24 @@
+[Unit]
+Description=Prune per-user uv caches on the scratch volume
+Documentation=https://github.com/eye-ai-usc/eye-ai-compute-platform
+
+# Only meaningful once the scratch volume is mounted and a cache root exists.
+ConditionPathIsMountPoint=/opt/dlami/nvme
+ConditionPathExists=/usr/local/sbin/prune-uv-caches.sh
+
+OnFailure=jupyterhub-failure-notify@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/prune-uv-caches.sh
+
+# Pruning walks each user's cache; bound it rather than letting a pathological
+# tree run indefinitely.
+TimeoutStartSec=1800
+
+# Yield to real work. This is housekeeping, and the volume's IOPS are shared
+# with whatever users are doing.
+Nice=19
+IOSchedulingClass=idle
+
+# No [Install] section on purpose: started by prune-uv-caches.timer or by hand.

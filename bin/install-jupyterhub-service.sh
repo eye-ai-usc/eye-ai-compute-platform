@@ -68,6 +68,16 @@ sudo install -m 0755 "$NEW_RELEASE/bin/system-status.sh" \
 sudo install -d -m 0755 /etc/update-motd.d
 sudo ln -sfn /usr/local/sbin/system-status /etc/update-motd.d/99-system-status
 
+# Bounds growth of the per-user uv caches on the shared, unquota'd scratch volume.
+sudo install -m 0755 "$NEW_RELEASE/bin/prune-uv-caches.sh" \
+  /usr/local/sbin/prune-uv-caches.sh
+
+sudo install -m 0644 "$NEW_RELEASE/systemd/prune-uv-caches.service" \
+  /etc/systemd/system/prune-uv-caches.service
+
+sudo install -m 0644 "$NEW_RELEASE/systemd/prune-uv-caches.timer" \
+  /etc/systemd/system/prune-uv-caches.timer
+
 sudo systemctl daemon-reload
 sudo systemctl enable jupyterhub
 
@@ -110,6 +120,7 @@ fi
 #    earlier lets a Persistent=true catch-up run start while the deploy is still
 #    in flight.
 sudo systemctl enable --now jupyterhub-update.timer
+sudo systemctl enable --now prune-uv-caches.timer
 
 # 5) Emit status + helpers
 echo ""

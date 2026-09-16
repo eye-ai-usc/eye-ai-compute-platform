@@ -158,6 +158,43 @@ def ensure_home_quota(username: str):
         log.error("Failed to set home quota for %s: %s", username, e)
 
 
+# --- uv cache on the instance-store NVMe ---
+#
+# uv's cache grows without bound as people build environments, and in a home
+# directory it counts against the quota: it accounted for 24 GB of one user's
+# 132 GB. A build cache is regenerable, so the instance store is the right place
+# for it -- faster than the EBS home volume, outside the quota, and wiped on
+# stop/start, which for a cache is correct rather than a drawback. It also gives
+# that volume the scratch use it is mounted for.
+#
+# Note that uv hardlinks from its cache into venv site-packages. Moving the cache
+# to a different filesystem means it copies instead, so a user's existing venvs
+# keep their own copies and only new builds benefit.
+NVME_SCRATCH = os.environ.get("NVME_SCRATCH", "/opt/dlami/nvme")
+UV_CACHE_ROOT = os.path.join(NVME_SCRATCH, "uv-cache")
+
+
+def ensure_uv_cache_dir(username: str, group: str):
+    """Per-user uv cache on the instance store. Returns the path, or None."""
+    if not os.path.ismount(NVME_SCRATCH):
+        # Instance store absent or unmounted. Leaving UV_CACHE_DIR unset falls
+        # back to ~/.cache/uv, which works -- it just counts against the quota.
+        log.warning(
+            "%s is not a mountpoint; leaving uv cache in the home directory",
+            NVME_SCRATCH,
+        )
+        return None
+    cache_dir = os.path.join(UV_CACHE_ROOT, username)
+    try:
+        _run("mkdir", "-p", cache_dir)
+        _run("chown", f"{username}:{group}", cache_dir)
+        _run("chmod", "0700", cache_dir)
+        return cache_dir
+    except Exception as e:
+        log.error("Failed to ensure uv cache dir for %s at %s: %s", username, cache_dir, e)
+        return None
+
+
 async def _pre_spawn_hook(spawner):
     username = spawner.user.name
     log.info("pre_spawn_hook: provisioning user '%s'", username)
@@ -168,9 +205,12 @@ async def _pre_spawn_hook(spawner):
     ensure_user_in_group(username, JUPYTER_GROUP)
     ensure_data_dir(username, JUPYTER_GROUP)
     ensure_home_quota(username)
+    uv_cache = ensure_uv_cache_dir(username, JUPYTER_GROUP)
 
     spawner.environment = spawner.environment or {}
     spawner.environment["UMASK"] = DEFAULT_UMASK
+    if uv_cache:
+        spawner.environment["UV_CACHE_DIR"] = uv_cache
 
 
 c.Spawner.pre_spawn_hook = _pre_spawn_hook
