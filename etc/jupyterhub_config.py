@@ -96,6 +96,11 @@ c.Spawner.environment.update({
 DATA_ROOT = os.environ.get("DATA_ROOT", "/data")
 JUPYTER_GID = os.environ.get("JUPYTER_GID", "900")
 JUPYTER_GROUP = os.environ.get("JUPYTER_GROUP", "jupyter")
+# Shared, group-writable location for the deriva-ml bag cache. Distinct from
+# the per-user scratch dirs: this is the one tree under DATA_ROOT where group
+# `jupyter` ownership is intended, so that one user's downloaded bag is
+# reusable by everyone else.
+SHARED_CACHE_DIR = os.environ.get("SHARED_CACHE_DIR", os.path.join(DATA_ROOT, "cache"))
 # 0002 == group-writable. 0022 ("group read-only") was correct while the
 # deriva-ml bag cache shared by directory glob: a second user only ever read
 # another user's cached bag, so group-read was sufficient. deriva-ml v1.35.0
@@ -121,14 +126,60 @@ def ensure_user_in_group(username: str, group: str):
         log.error("Failed to add user %s to group %s: %s", username, group, e)
 
 
-def ensure_data_dir(username: str, group: str):
+def ensure_data_dir(username: str):
+    """Give the user a private scratch directory on the shared volume.
+
+    Owned by the user's *private* group, and deliberately not setgid.
+
+    This used to be `user:jupyter` mode 2755. That was safe under umask 0022,
+    where the group-write bit was masked off anyway. Under 0002 it is not: the
+    setgid bit propagates `jupyter` into every subdirectory the user creates,
+    and those come out drwxrwsr-x, so any member of `jupyter` can add or delete
+    files inside another user's scratch tree.
+
+    Dropping setgid means children inherit the creating process's primary
+    group, which is the user's own. Under umask 0002 that yields 0664/0775
+    owned by `user:user` -- writable only by them, still readable by everyone.
+
+    Group ownership, not umask, is what distinguishes shared from private here.
+    A shared deriva-ml cache wants a `jupyter`-group setgid directory so 0002
+    makes it genuinely group-writable; per-user scratch wants this.
+    """
     user_dir = os.path.join(DATA_ROOT, username)
     try:
         _run("mkdir", "-p", user_dir)
-        _run("chown", f"{username}:{group}", user_dir)
-        _run("chmod", "2755", user_dir)  # drwxr-sr-x
+        _run("chown", f"{username}:{username}", user_dir)
+        _run("chmod", "0755", user_dir)  # drwxr-xr-x, no setgid
     except Exception as e:
         log.error("Failed to ensure data dir for %s at %s: %s", username, user_dir, e)
+
+
+def ensure_shared_cache_dir(group: str):
+    """Provision the shared, group-writable deriva-ml cache directory.
+
+    The counterpart to ensure_data_dir: setgid with group `jupyter`, so under
+    umask 0002 everything created inside stays group-writable and every user
+    can both read another user's cached bag and contribute their own. The
+    deriva-ml bag cache is content-addressed, so a single shared copy is the
+    whole point.
+
+    No sticky bit. It would stop one user removing another's cached entries,
+    which sounds protective, but the cache is regenerable by design and
+    eviction when the volume fills is a legitimate shared operation. Losing a
+    cached bag costs a re-download, not data.
+
+    Not yet pointed at by anything: deriva-ml resolves cache_dir from
+    working_dir and has no environment override, so until it grows a
+    DERIVA_ML_CACHE_DIR this directory is staged rather than wired up. It is
+    provisioned now so the location is blessed and correctly moded before
+    /data is purged and rebuilt.
+    """
+    try:
+        _run("mkdir", "-p", SHARED_CACHE_DIR)
+        _run("chown", f"root:{group}", SHARED_CACHE_DIR)
+        _run("chmod", "2775", SHARED_CACHE_DIR)  # drwxrwsr-x
+    except Exception as e:
+        log.error("Failed to ensure shared cache dir at %s: %s", SHARED_CACHE_DIR, e)
 
 
 # --- Home quota provisioning ---
@@ -182,7 +233,8 @@ async def _pre_spawn_hook(spawner):
 
     ensure_group(JUPYTER_GROUP, JUPYTER_GID)
     ensure_user_in_group(username, JUPYTER_GROUP)
-    ensure_data_dir(username, JUPYTER_GROUP)
+    ensure_data_dir(username)
+    ensure_shared_cache_dir(JUPYTER_GROUP)
     ensure_home_quota(username)
 
     spawner.environment = spawner.environment or {}
