@@ -526,11 +526,12 @@ no package change, discards what it built, and leaves the running hub alone.
 ### Rehearse the rollback before trusting it
 
 That path only executes when something has already gone wrong, which is the
-worst time to discover a bug in it. Force it deliberately:
+worst time to discover a bug in it. Force it deliberately, from a root shell --
+a default sudoers policy rejects setting variables on a `sudo` command line:
 
 ```bash
 sudo cp -a /home/jupyterhub/state/jupyterhub.sqlite /home/jupyterhub/state/backups/jupyterhub.sqlite.manual-pre-deploy
-sudo JH_HEALTH_TIMEOUT=10 ./bin/install-jupyterhub-service.sh
+JH_HEALTH_TIMEOUT=10 ./bin/install-jupyterhub-service.sh
 ```
 
 Ten seconds is not long enough for the hub to start, so verification fails on

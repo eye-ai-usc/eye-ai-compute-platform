@@ -66,7 +66,22 @@ sudo systemctl enable jupyterhub
 
 # 3) Activate: build, migrate, flip, restart, verify, revert on failure.
 #    Nothing before this point has touched the running hub.
-if ! sudo "$NEW_RELEASE/bin/activate-release.sh" "$NEW_RELEASE"; then
+#
+#    Forward the activation knobs explicitly. sudo resets the environment, so an
+#    operator running `JH_HEALTH_TIMEOUT=10 ./install-jupyterhub-service.sh`
+#    would otherwise see the variable silently dropped here -- and a rollback
+#    rehearsal that quietly used the default timeout would report success
+#    without ever exercising the rollback.
+ACTIVATE_ENV=()
+for _v in JH_HEALTH_TIMEOUT JH_HEALTH_URL JH_LOCK_WAIT JH_ROLLBACK_ON_FAILURE \
+          JH_KEEP_RELEASES JH_ROOT JH_STATE_DIR; do
+  if [[ -n "${!_v:-}" ]]; then
+    ACTIVATE_ENV+=("${_v}=${!_v}")
+    echo "[install] forwarding ${_v}=${!_v} to activate-release.sh"
+  fi
+done
+
+if ! sudo env "${ACTIVATE_ENV[@]}" "$NEW_RELEASE/bin/activate-release.sh" "$NEW_RELEASE"; then
   echo ""
   echo "ERROR: activation failed. The previous release has been restored and the"
   echo "       pre-migration database put back. The update timer was NOT armed."
