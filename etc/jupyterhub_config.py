@@ -115,6 +115,49 @@ def ensure_data_dir(username: str, group: str):
         log.error("Failed to ensure data dir for %s at %s: %s", username, user_dir, e)
 
 
+# --- Home quota provisioning ---
+#
+# enable-home-quotas.service applies limits by looping /etc/passwd, so it only
+# covers accounts that exist when it runs -- at boot. Accounts are created on
+# first Globus login, so between boots a new user has no limit at all. On a host
+# with multi-week uptime that gap is wide enough for someone to fill /home.
+#
+# Applying the limit here closes it: the first spawn sets it, rather than the
+# next reboot.
+#
+# The marker file is what keeps this from clobbering a deliberately raised
+# limit. Once a user has been provisioned we never touch their quota again, so
+# `setquota -u someone <bigger>` by hand is permanent. It lives under state/ on
+# the EBS volume so it survives an AMI refresh; losing it would mean the next
+# spawn resets that user to the defaults.
+QUOTA_FS = os.environ.get("HOME_QUOTA_FS", "/home")
+QUOTA_SOFT_KIB = os.environ.get("QUOTA_SOFT_KIB", str(50 * 1024 * 1024))
+QUOTA_HARD_KIB = os.environ.get("QUOTA_HARD_KIB", str(60 * 1024 * 1024))
+QUOTA_MARKER_DIR = os.path.join(STATE_DIR, "quota-provisioned")
+
+
+def ensure_home_quota(username: str):
+    marker = os.path.join(QUOTA_MARKER_DIR, username)
+    if os.path.exists(marker):
+        return
+    try:
+        _run(
+            "setquota", "-u", username,
+            QUOTA_SOFT_KIB, QUOTA_HARD_KIB, "0", "0", QUOTA_FS,
+        )
+        os.makedirs(QUOTA_MARKER_DIR, exist_ok=True)
+        with open(marker, "w") as fh:
+            fh.write(f"{QUOTA_SOFT_KIB} {QUOTA_HARD_KIB} {QUOTA_FS}\n")
+        log.info(
+            "Applied home quota for %s: %s/%s KiB on %s",
+            username, QUOTA_SOFT_KIB, QUOTA_HARD_KIB, QUOTA_FS,
+        )
+    except Exception as e:
+        # Not fatal. A quota that failed to apply is worth knowing about, but it
+        # is not a reason to refuse somebody their notebook.
+        log.error("Failed to set home quota for %s: %s", username, e)
+
+
 async def _pre_spawn_hook(spawner):
     username = spawner.user.name
     log.info("pre_spawn_hook: provisioning user '%s'", username)
@@ -124,6 +167,7 @@ async def _pre_spawn_hook(spawner):
     ensure_group(JUPYTER_GROUP, JUPYTER_GID)
     ensure_user_in_group(username, JUPYTER_GROUP)
     ensure_data_dir(username, JUPYTER_GROUP)
+    ensure_home_quota(username)
 
     spawner.environment = spawner.environment or {}
     spawner.environment["UMASK"] = DEFAULT_UMASK
