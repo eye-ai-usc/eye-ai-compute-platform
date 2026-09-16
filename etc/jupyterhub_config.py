@@ -65,7 +65,18 @@ c.LocalGlobusOAuthenticator.add_user_cmd = os.environ.get(
 USER_VENV = os.environ.get("JH_USER_VENV", "/home/jupyterhub/state/user-venv")
 c.JupyterHub.spawner_class = "jupyterhub.spawner.LocalProcessSpawner"
 c.Spawner.default_url = "/lab"
-c.Spawner.cmd = ["/home/jupyterhub/current/venv/bin/jupyterhub-singleuser"]
+
+# Spawn through a wrapper so the UMASK set in _pre_spawn_hook actually takes
+# effect. umask is a process attribute, not an environment variable, so it
+# needs a shell between the spawner and the server binary -- exec'ing
+# jupyterhub-singleuser directly leaves UMASK inert and the kernel inherits
+# systemd's default 0022. SINGLEUSER_BIN keeps the real path in one place.
+SINGLEUSER_BIN = os.environ.get(
+    "JH_SINGLEUSER_BIN", "/home/jupyterhub/current/venv/bin/jupyterhub-singleuser"
+)
+c.Spawner.cmd = [
+    os.environ.get("JH_SPAWN_WRAPPER", "/home/jupyterhub/current/bin/spawn-singleuser.sh")
+]
 # Prepend user venv bin to existing PATH
 _existing_path = os.environ.get("PATH", "")
 _prepend = f"{USER_VENV}/bin"
@@ -85,7 +96,12 @@ c.Spawner.environment.update({
 DATA_ROOT = os.environ.get("DATA_ROOT", "/data")
 JUPYTER_GID = os.environ.get("JUPYTER_GID", "900")
 JUPYTER_GROUP = os.environ.get("JUPYTER_GROUP", "jupyter")
-DEFAULT_UMASK = os.environ.get("DEFAULT_UMASK", "0022")  # group read-only
+# 0002 == group-writable. 0022 ("group read-only") was correct while the
+# deriva-ml bag cache shared by directory glob: a second user only ever read
+# another user's cached bag, so group-read was sufficient. deriva-ml v1.35.0
+# replaced the glob with a WAL SQLite index that is opened read-write even to
+# consume a cache hit, which made group-read-only a silent no-share.
+DEFAULT_UMASK = os.environ.get("DEFAULT_UMASK", "0002")
 
 def _run(*args: str):
     subprocess.check_call(list(args))
@@ -171,6 +187,7 @@ async def _pre_spawn_hook(spawner):
 
     spawner.environment = spawner.environment or {}
     spawner.environment["UMASK"] = DEFAULT_UMASK
+    spawner.environment["SINGLEUSER_BIN"] = SINGLEUSER_BIN
 
 
 c.Spawner.pre_spawn_hook = _pre_spawn_hook
