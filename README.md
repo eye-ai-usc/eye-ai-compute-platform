@@ -194,6 +194,43 @@ ALLOW_MKFS=1 /usr/local/sbin/mount-ebs-volumes.sh
 * Turn quotas on
 * Apply default quotas to existing users
 
+**Limits are applied twice, deliberately**
+
+This service applies them by looping `/etc/passwd`, so it covers only accounts
+that exist when it runs -- at boot. Accounts are created on first Globus login,
+so between boots a new user would have no limit at all, and `0/0` means
+unlimited. On a host with multi-week uptime that gap is wide enough to fill
+`/home`.
+
+So `_pre_spawn_hook` in `etc/jupyterhub_config.py` also calls
+`ensure_home_quota`, which runs `setquota` on a user's first spawn and records a
+marker under `state/quota-provisioned/`. Later spawns are a file-existence check.
+
+That marker is what protects a deliberately raised limit: once a user is
+provisioned their quota is never touched again, so `setquota -u someone <bigger>`
+by hand is permanent. Conversely, raising a limit for a user who has **not** yet
+spawned under this release will be reset on their next spawn -- pre-seed the
+marker first:
+
+```bash
+touch /home/jupyterhub/state/quota-provisioned/<username>
+```
+
+Both paths default to the same 50/60 GiB and read `QUOTA_SOFT_KIB` /
+`QUOTA_HARD_KIB`. Change one and change the other, or a user's limit depends on
+whether a reboot or a spawn set it first.
+
+**Checking enforcement**
+
+```bash
+quotaon -p /home
+repquota -s /home
+```
+
+A user showing `0` in both limit columns has no quota. Note that quota does not
+retroactively reclaim anything: a user who exceeded a limit before it was applied
+stays over, with the grace period running, until they get back under it.
+
 **Script**
 
 * `/usr/local/sbin/enable-home-quotas.sh`
