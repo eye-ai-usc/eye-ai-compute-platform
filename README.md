@@ -32,7 +32,10 @@ The primary goal is **easy DLAMI upgrades** with **zero data loss**, **explicit 
 
    * Each release is a full copy of the repo
    * Python dependencies live in a per-release virtualenv
-   * Switching releases is a symlink flip + service restart
+   * `bin/activate-release.sh` builds before it flips and verifies after, and
+     reverts both the release symlink and the database if the hub does not come
+     back. Deploys and automatic updates use that one implementation.
+   * Shared state under `state/` is the exception -- see [Rollback](#rollback)
 
 4. **Bootstrap and updates are explicit**
 
@@ -59,25 +62,36 @@ The primary goal is **easy DLAMI upgrades** with **zero data loss**, **explicit 
     └── state/
         ├── jupyterhub.sqlite
         ├── jupyterhub_cookie_secret
+        ├── .last-db-backup        # path of the most recent pre-migration copy
+        ├── .release.lock          # serializes deploys against weekly updates
+        ├── backups/               # timestamped db copies + pip freezes
         ├── pid/
         ├── logs/
         └── user-venv/
 ```
+
+State is shared across releases, so nothing under `state/` is reverted by a
+release rollback. See [Rollback](#rollback) for the database and user-venv.
 
 ### Root filesystem (reproducible)
 
 ```
 /usr/local/sbin/
 ├── mount-ebs-volumes.sh
-└── enable-home-quotas.sh
+├── enable-home-quotas.sh
+└── jupyterhub-notify-failure.sh
 
 /etc/systemd/system/
 ├── mount-ebs-volumes.service
 ├── enable-home-quotas.service
 ├── jupyterhub.service
 ├── jupyterhub-update.service
-└── jupyterhub-update.timer
+├── jupyterhub-update.timer
+└── jupyterhub-failure-notify@.service
 ```
+
+The failure handler lives in `/usr/local/sbin` rather than inside a release, so
+it still works when the release is what broke.
 
 All rootfs files are installed from this repo via installer scripts.
 
@@ -86,7 +100,9 @@ All rootfs files are installed from this repo via installer scripts.
 ## Boot Order (systemd)
 
 ```
-mount-ebs-volumes.service
+local-fs.target             # fstab mounts /home, /data, /opt/dlami/nvme by UUID
+    ↓
+mount-ebs-volumes.service   # first-boot bootstrap; a no-op once fstab is set
     ↓
 enable-home-quotas.service
     ↓
@@ -109,13 +125,41 @@ This is enforced via `Requires=`, `After=`, and `ConditionPath*`.
 
 **Purpose**
 
-* Format EBS devices if needed
-* Mount:
-
-  * `/home`
-  * `/data`
+* Bootstrap `/home` and `/data` on first boot: format if requested, add
+  `/etc/fstab` entries by UUID, mount
+* Set shared `/data` group permissions
 * Optionally configure NVMe swap
-* Add `/etc/fstab` entries
+
+**On an already-configured host this unit is a fast no-op.** Every mount it
+manages is in `/etc/fstab` by UUID and is mounted by systemd before this unit
+runs. If the mounts are in place, it does nothing.
+
+**Ordering**
+
+It runs `After=local-fs.target`, deliberately. It used to run
+`Before=local-fs.target`, which raced the fstab mounts it depends on. On
+2026-09-15 the race was lost: `/home` was not yet a mountpoint when the script
+checked, so it entered the one-time home-migration path and rsynced a 353 GB
+volume against itself for 8m41s while every other unit waited behind
+`local-fs.target`. The host was unreachable for nine minutes. `TimeoutStartSec=300`
+now bounds it, because `Type=oneshot` otherwise defaults to infinity and a hang
+has no recovery path except the serial console.
+
+**Safety flags**
+
+Two operations are destructive or slow enough that they must never fire during
+an ordinary boot. Both are off by default and must be set explicitly:
+
+| Flag | Guards |
+|---|---|
+| `ALLOW_MKFS=1` | `mkfs.ext4 -F` on a device with no filesystem. Kernel names such as `/dev/nvme1n1` are **not** stable across boots -- this host has four NVMe controllers -- so an unattended format can hit the wrong disk. |
+| `ALLOW_HOME_MIGRATION=1` | The one-time rootfs `/home` -> EBS copy. Also requires an absent sentinel at `/var/lib/eye-ai-compute/home-migrated`, `/home` not already a mountpoint, and the target device not mounted anywhere else. |
+
+Run either by hand, once, after confirming the device:
+
+```bash
+sudo ALLOW_MKFS=1 /usr/local/sbin/mount-ebs-volumes.sh
+```
 
 **Script**
 
@@ -123,7 +167,7 @@ This is enforced via `Requires=`, `After=`, and `ConditionPath*`.
 
 **Source of truth**
 
-* `scripts/mount-ebs-volumes.sh` (in repo)
+* `bin/mount-ebs-volumes.sh` (in repo)
 
 ---
 
@@ -186,21 +230,142 @@ This is enforced via `Requires=`, `After=`, and `ConditionPath*`.
 
 **Purpose**
 
-* Perform **explicit**, best-effort upgrades of Python dependencies
+* Perform **explicit** upgrades of Python dependencies, within the version
+  bounds pinned in the release
 
 **Behavior**
 
-* Runs the same bootstrap script in **relaxed mode**
-* Does **not** affect JupyterHub availability
-* Can be:
-  * triggered manually
-  * run automatically on a weekly schedule
+Runs `bin/update-jupyterhub-release.sh`, which stages a new timestamped release
+from the current release's source tree, builds a fresh venv from
+`etc/requirements-hub.txt`, and discards it again if `pip freeze` shows no
+package change. If packages did change, it hands the staged release to
+`bin/activate-release.sh`.
+
+### `activate-release.sh` owns everything dangerous
+
+Both the weekly update and `install-jupyterhub-service.sh` stage a directory and
+then call it, so a deploy and an automatic update follow identical code paths.
+Its rule:
+
+> Build before you flip, verify after you flip, and never exit without doing one
+> or the other.
+
+In order:
+
+1. Take the release lock, so a deploy and an update can never interleave
+2. Build the venv while the old release is still serving -- a failure here costs
+   nothing, because the flip has not happened
+3. Back up and migrate the database, *only* now, having committed to the flip.
+   Migration is not reversible, so it must never run on a path that might
+   discard the release
+4. Flip `previous` and `current`, restart, and poll the hub's health endpoint
+5. On failure, revert the symlink, restore the pre-migration database, and
+   restart -- driven by an `EXIT` trap, so a `SIGTERM` from `TimeoutStartSec`
+   cannot abandon the system half-changed
+
+Contention is deterministic rather than queued. The update probes the lock
+before doing any work and defers if a deploy is running; activation itself uses
+a non-blocking lock and exits 75 (`EX_TEMPFAIL`), which the update treats as
+"try again next week". A deploy waits up to `JH_LOCK_WAIT` seconds and then
+fails loudly rather than proceeding.
+
+`JH_ROLLBACK_ON_FAILURE=0` declines to revert but still verifies and still exits
+non-zero, leaving a warning naming the release that needs reverting by hand.
+
+The health check polls the hub's endpoint rather than just `systemctl is-active`,
+because a hub can keep its process alive without being able to answer requests.
+The URL is **derived from the release's own `jupyterhub_config.py`** --
+`c.JupyterHub.bind_url` plus `c.JupyterHub.base_url` plus `hub/health`, giving
+`http://127.0.0.1:8000/hub/health` on the current config -- so it cannot drift
+from the config the way a hardcoded default would.
+
+That is deliberately the proxy address, not the Hub's internal API port (8081 by
+default). Checking the internal port would report success with
+`configurable-http-proxy` dead, when nothing is actually reachable.
+
+The parser reads string literals only. A config that computes `bind_url` or
+`base_url` from the environment needs `JH_HEALTH_URL` set explicitly; the script
+warns and degrades to `systemctl is-active` if it cannot parse one.
+
+Note the limit: no automated check catches a broken authenticator flow, so
+validate a real Globus sign-in by hand after any upgrade crossing a major version.
+
+It does **not** upgrade packages inside the running release. That distinction
+matters: an update that mutates `current/venv` in place makes the deployed
+release differ from what was deployed, and a symlink-flip rollback can no longer
+restore the previous package set.
+
+The hub is restarted, so it is briefly unavailable and running single-user
+servers are stopped.
+
+**Version pinning**
+
+Package versions are bounded in `etc/requirements-hub.txt` and
+`etc/requirements-user.txt`, which ship with the release. Raising a major bound
+is a reviewed change: edit the requirements file, deploy with
+`install-jupyterhub-service.sh`, and validate a real login and spawn.
+
+Unbounded upgrades are how the 2026-09-06 outage happened: a weekly run crossed
+JupyterHub 5.x to 6.0.0, which changed the database schema, and the hub refused
+to start until the database was migrated.
 
 **Manual invocation**
 
 ```bash
 systemctl start jupyterhub-update
+journalctl -u jupyterhub-update.service -f
 ```
+
+Note that the upgrade log lives in `jupyterhub-update.service`, not in
+`jupyterhub.service`. When a restart follows an update, the reason is in the
+update unit's journal.
+
+---
+
+### 5. `jupyterhub-failure-notify@.service`
+
+**Purpose**
+
+* Report a failed unit, so automatic recovery is not also silent recovery
+
+`jupyterhub.service`, `jupyterhub-update.service` and `mount-ebs-volumes.service`
+all declare `OnFailure=jupyterhub-failure-notify@%n.service`. The template runs
+`/usr/local/sbin/jupyterhub-notify-failure.sh` with the failing unit's status and
+its last 50 journal lines.
+
+This exists because the automation recovers on its own. A failed weekly update
+rolls back to the previous release and restores the pre-migration database, the
+hub keeps serving, and nothing surfaces -- which is how a broken updater goes
+unnoticed for weeks.
+
+**Delivery is unconfigured by default.** This host has no mail transport, and
+guessing at one produces a notifier that fails silently, which is worse than
+none. Set at most one of these in `/home/jupyterhub/etc/jupyterhub.env`:
+
+| Variable | Use |
+|---|---|
+| `JH_NOTIFY_COMMAND` | Shell command receiving the report on stdin. The general case: `sendmail -t`, an SNS publish, a paging CLI. |
+| `JH_NOTIFY_EMAIL` | Address to mail, via `mail(1)` or `sendmail(8)` if either is installed |
+| `JH_NOTIFY_WEBHOOK` | URL to POST `{"text": "..."}` to. Slack-shaped; use `JH_NOTIFY_COMMAND` for any other payload format. |
+
+With none set the report still reaches the journal, so
+`journalctl -u 'jupyterhub-failure-notify@*'` always has it. The handler never
+exits non-zero, so a broken notifier cannot produce a second failed unit.
+
+Test it against a healthy unit without breaking anything:
+
+```bash
+sudo systemctl start jupyterhub-failure-notify@jupyterhub-update.service
+sudo journalctl -u 'jupyterhub-failure-notify@*' -n 40 --no-pager
+```
+
+**Script**
+
+* `/usr/local/sbin/jupyterhub-notify-failure.sh`
+
+**Source of truth**
+
+* `bin/notify-failure.sh` (in repo)
 
 ---
 
@@ -344,19 +509,45 @@ From a checked-out repo:
 This will:
 
 * copy the repo into a new timestamped release
-* update `/home/jupyterhub/current`
-* restart JupyterHub
+* install the systemd units from that release
+* hand the release to `bin/activate-release.sh`, which builds the venv while the
+  old release keeps serving, migrates the database, flips `current`, restarts
+  JupyterHub, and verifies it is serving
+* revert the symlink and restore the pre-migration database if it is not
+* arm `jupyterhub-update.timer` **only** once the hub is verified
 * print rollback instructions
+
+Restarting the hub stops running single-user servers, so pick a window.
+
+Nothing needs masking or disabling beforehand. The timer is armed last, and a
+`Persistent=true` catch-up run firing afterwards takes the release lock, finds
+no package change, discards what it built, and leaves the running hub alone.
+
+### Rehearse the rollback before trusting it
+
+That path only executes when something has already gone wrong, which is the
+worst time to discover a bug in it. Force it deliberately:
+
+```bash
+sudo cp -a /home/jupyterhub/state/jupyterhub.sqlite /home/jupyterhub/state/backups/jupyterhub.sqlite.manual-pre-deploy
+sudo JH_HEALTH_TIMEOUT=10 ./bin/install-jupyterhub-service.sh
+```
+
+Ten seconds is not long enough for the hub to start, so verification fails on
+purpose. You should land back on the previous release with the pre-migration
+database restored, the timer unarmed, and an error saying so. Retention only
+prunes `.auto.` copies, so the manual backup above survives regardless.
 
 ---
 
 ## Rollback
 
-Example output:
+A failed deploy or update already reverts itself. This is for reverting a
+release that deployed cleanly but turned out to be wrong.
+`install-jupyterhub-service.sh` prints the exact command on success:
 
 ```bash
-sudo ln -sfn /home/jupyterhub/releases/<timestamp> /home/jupyterhub/current \
-  && sudo systemctl restart jupyterhub
+sudo ln -sfn /home/jupyterhub/releases/<timestamp> /home/jupyterhub/current && sudo systemctl restart jupyterhub
 ```
 
 Rollback restores:
@@ -367,6 +558,41 @@ Rollback restores:
 * update behavior
 
 User data and state are untouched.
+
+### The database is the exception
+
+The hub database lives in shared state (`/home/jupyterhub/state/jupyterhub.sqlite`),
+not in the release, so a symlink flip does **not** revert it. If the release you
+are leaving had migrated the schema, the older hub cannot open the database and
+will fail to start with:
+
+```
+Found database schema version <old> != <new>. Backup your database and run
+`jupyterhub upgrade-db` to upgrade to the latest schema.
+```
+
+Restore the pre-migration copy alongside the symlink flip. `bootstrap-jupyterhub.sh`
+writes one to `/home/jupyterhub/state/backups/jupyterhub.sqlite.auto.<timestamp>`
+before every migration, and records the most recent path in
+`/home/jupyterhub/state/.last-db-backup`. Only `.auto.` copies are subject to
+retention, so a backup you take by hand under a different name is never pruned:
+
+```bash
+sudo systemctl stop jupyterhub
+sudo cp -a "$(cat /home/jupyterhub/state/.last-db-backup)" /home/jupyterhub/state/jupyterhub.sqlite
+sudo ln -sfn /home/jupyterhub/releases/<timestamp> /home/jupyterhub/current
+sudo systemctl start jupyterhub
+```
+
+`update-jupyterhub-release.sh` does exactly this automatically when a hub it
+just deployed fails to come back.
+
+### The single-user venv is also shared
+
+`/home/jupyterhub/state/user-venv` is shared state too, so a release rollback
+does not revert `jupyterlab` or `jupyter_server` for user servers. If the hub is
+healthy but notebooks misbehave after an update, reinstall there explicitly from
+a recorded freeze in `/home/jupyterhub/state/backups/pip-freeze-user-*.txt`.
 
 ---
 
@@ -390,6 +616,11 @@ GLOBUS_CLIENT_SECRET=...
 ```bash
 ALLOWED_GROUPS=uuid1,uuid2
 ADMIN_GROUPS=uuid3
+
+# Failure notification -- set at most one; see jupyterhub-failure-notify@.service
+JH_NOTIFY_COMMAND='sendmail -t'
+JH_NOTIFY_EMAIL=isrd-support@isi.edu
+JH_NOTIFY_WEBHOOK=https://hooks.slack.com/services/...
 ```
 
 ---
@@ -403,6 +634,7 @@ systemctl status mount-ebs-volumes.service
 systemctl status enable-home-quotas.service
 systemctl status jupyterhub
 systemctl status jupyterhub-update.service
+systemctl --failed
 ```
 
 ### Logs
@@ -412,7 +644,12 @@ journalctl -u mount-ebs-volumes.service
 journalctl -u enable-home-quotas.service
 journalctl -u jupyterhub
 journalctl -u jupyterhub-update.service
+journalctl -u 'jupyterhub-failure-notify@*'
 ```
+
+An upgrade's pip output is in `jupyterhub-update.service`, not in
+`jupyterhub.service`. When a restart follows an update, the reason is in the
+update unit's journal.
 
 ### Common issues
 
@@ -424,6 +661,21 @@ journalctl -u jupyterhub-update.service
   * quotas are enabled
   * `/home/jupyterhub/current` exists
 * The service will **retry for transient failures** and **fail cleanly** for real configuration errors
+
+#### A deploy or weekly update failed
+
+It has already reverted itself: `current` is back on the previous release and the
+pre-migration database has been restored. The hub should still be serving.
+
+```bash
+journalctl -u jupyterhub-update.service -n 80 --no-pager
+readlink -f /home/jupyterhub/current /home/jupyterhub/previous
+ls -lt /home/jupyterhub/state/backups/ | head
+```
+
+The staged release that failed is left in place for diagnosis and is pruned on a
+later successful activation. If `JH_ROLLBACK_ON_FAILURE=0` was set, nothing was
+reverted and the journal names the release to revert by hand.
 
 #### Users get logged out on restart
 

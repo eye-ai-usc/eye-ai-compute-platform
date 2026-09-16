@@ -1,9 +1,25 @@
 {
-  email isrd-support@isi.edu
-  # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory  # uncomment this for testing to avoid rate limits
+	# HTTP/1.1 and HTTP/2 only -- HTTP/3 (QUIC) is deliberately disabled.
+	servers :443 {
+		protocols h1 h2
+	}
+	email isrd-support@isi.edu
+	#	acme_ca https://acme-staging-v02.api.letsencrypt.org/directory # uncomment this for testing to avoid rate limits
 }
 
 {{HOST}} {
-  encode zstd gzip
-  reverse_proxy 127.0.0.1:8000
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8000 {
+		transport http {
+			# The upstream is configurable-http-proxy, which speaks HTTP/1.1
+			# only. Caddy already defaults to h1 for a plain http:// upstream,
+			# so this is explicit intent rather than a behavior change -- and it
+			# keeps WebSocket upgrades on the path they need.
+			versions h1
+			# Kernel WebSockets idle for long stretches and uploads to /home can
+			# run long; the defaults are far too short for both.
+			read_timeout 3600s
+			write_timeout 3600s
+		}
+	}
 }

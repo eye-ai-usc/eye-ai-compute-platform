@@ -1,21 +1,33 @@
 [Unit]
-Description=Update JupyterHub environment (per-release, relaxed mode)
+Description=Update JupyterHub environment (builds a new release, then flips)
 Documentation=https://github.com/eye-ai-usc/eye-ai-compute-platform
 After=network-online.target
 Wants=network-online.target
 
 # Only run if a release is deployed
 ConditionPathIsDirectory=/home/jupyterhub/current
-ConditionPathExists=/home/jupyterhub/current/bin/bootstrap-jupyterhub.sh
+ConditionPathExists=/home/jupyterhub/current/bin/update-jupyterhub-release.sh
+
+# This is the unit that most needs it. A failed update rolls back on its own and
+# the hub keeps serving, so without a notification the failure is invisible.
+OnFailure=jupyterhub-failure-notify@%n.service
 
 [Service]
 Type=oneshot
 
-# Relaxed mode: best-effort upgrades, never fatal
-Environment=BOOTSTRAP_MODE=relaxed
-
 WorkingDirectory=/home/jupyterhub/current
-ExecStart=/home/jupyterhub/current/bin/bootstrap-jupyterhub.sh
-ExecStartPost=/bin/bash -c 'if [ -f /home/jupyterhub/state/NEEDS_RESTART ]; then rm -f /home/jupyterhub/state/NEEDS_RESTART && systemctl try-restart jupyterhub.service; fi'
+
+# Builds a new timestamped release with a fresh venv from the release's pinned
+# requirements, migrates the database, flips the current symlink, restarts the
+# hub, and reverts both the symlink and the database if it does not come back.
+ExecStart=/home/jupyterhub/current/bin/update-jupyterhub-release.sh
+
+# Building a venv from scratch (jupyterhub, jupyterlab, oauthenticator) takes
+# well over the 90s oneshot default, and the health check waits up to 120s more.
+TimeoutStartSec=1800
+
 # Never restart automatically; retries are timer-driven
 Restart=no
+
+# No [Install] section on purpose: this unit is started by
+# jupyterhub-update.timer or by hand, never enabled to run at boot.

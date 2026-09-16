@@ -13,6 +13,10 @@ ConditionPathExists=/home/jupyterhub/current/bin/bootstrap-jupyterhub.sh
 StartLimitIntervalSec=600
 StartLimitBurst=10
 
+# Report when the unit gives up, rather than leaving it in the journal for
+# somebody to find later.
+OnFailure=jupyterhub-failure-notify@%n.service
+
 [Service]
 Type=simple
 User=root

@@ -1,0 +1,44 @@
+# Hub-side Python packages, installed into the per-release venv at
+# /home/jupyterhub/current/venv.
+#
+# WHY THESE ARE BOUNDED
+#
+# The weekly update timer runs pip with --upgrade. Without an upper bound, a new
+# upstream major release is installed unattended. That is what caused the
+# 2026-09-06 outage: JupyterHub 5.x -> 6.0.0 changed the database schema, the hub
+# refused to start against the un-migrated database, and systemd flapped until it
+# hit the start limit.
+#
+# ~=X.Y is a minor-level bound: 6.1 and 6.2 install unattended, 7.0 does not.
+# Crossing a major is a deliberate, reviewed change -- edit this file, deploy with
+# bin/install-jupyterhub-service.sh, and validate a real Globus login and spawn
+# before re-arming the timer. Do not edit the venv on the host.
+#
+# Note what this bound does and does not buy. It is NOT schema protection:
+# JupyterHub ships alembic migrations in minor releases too (the 2026-09-15
+# upgrade applied four in one hop). Schema changes are handled instead by
+# bootstrap-jupyterhub.sh, which backs up the database and runs `upgrade-db`
+# after any package change, and by update-jupyterhub-release.sh, which reverts
+# both the symlink and the pre-migration database if the hub fails to come back.
+#
+# What the bound does buy is protection from the changes a migration cannot fix:
+# renamed or removed config traits, authenticator contract changes, spawner
+# behavior. Those pass a "did it start" health check and only surface when
+# somebody tries to log in, which is why majors stay gated.
+#
+# Versions below were taken from the running host on 2026-09-15, after the
+# JupyterHub 6.0 upgrade was validated. bootstrap-jupyterhub.sh writes a fresh
+# freeze to /home/jupyterhub/state/backups/pip-freeze-hub-<timestamp>.txt after
+# every successful install; use that when revising these.
+
+jupyterhub~=6.0
+oauthenticator[globus]~=17.4
+jupyterlab~=4.6
+
+# This venv provides the notebook server AND the default python3 kernel, not
+# just the hub. c.Spawner.cmd points at current/venv/bin/jupyterhub-singleuser,
+# and a notebook on the default kernel reports sys.prefix = current/venv
+# (verified 2026-09-15). Pinned explicitly because it is what every user without
+# their own environment is running; left transitive it would be governed by
+# whatever jupyterlab happens to depend on.
+ipykernel~=7.2

@@ -1,0 +1,25 @@
+[Unit]
+Description=Report failure of %i
+Documentation=https://github.com/eye-ai-usc/eye-ai-compute-platform
+
+# Templated handler, referenced by other units as:
+#   OnFailure=jupyterhub-failure-notify@%n.service
+# where %n expands to the failing unit's full name and arrives here as %i.
+#
+# Delivery needs the network, but a unit that fails during boot would otherwise
+# trigger this before the network is up. Wants= rather than Requires= so the
+# report still reaches the journal if the network never arrives.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Optional: absent file is not an error, so this works before the operator has
+# configured any delivery method.
+EnvironmentFile=-/home/jupyterhub/etc/jupyterhub.env
+
+ExecStart=/usr/local/sbin/jupyterhub-notify-failure.sh %i
+
+# Never let a slow or hanging notifier become a problem of its own.
+TimeoutStartSec=120

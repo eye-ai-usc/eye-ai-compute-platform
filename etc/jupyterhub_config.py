@@ -9,7 +9,7 @@ log = traitlets.log.get_logger()
 # --- Core Hub / Proxy / Base URL ---
 c.JupyterHub.bind_url = "http://127.0.0.1:8000"
 c.JupyterHub.base_url = "/"
-c.JupyterHub.trusted_downstream = ["127.0.0.1"]
+c.JupyterHub.trusted_downstream_ips = ["127.0.0.1"]
 
 
 # --- Metrics & state (shared across releases) ---

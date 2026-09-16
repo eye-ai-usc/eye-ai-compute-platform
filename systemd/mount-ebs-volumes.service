@@ -24,6 +24,10 @@ Wants=lvm2-monitor.service
 
 ConditionPathExists=/usr/local/sbin/mount-ebs-volumes.sh
 
+# No-op until install-jupyterhub-service.sh has installed the handler; systemd
+# simply logs that the dependency is missing rather than failing this unit.
+OnFailure=jupyterhub-failure-notify@%n.service
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes
