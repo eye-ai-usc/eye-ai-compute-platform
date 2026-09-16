@@ -132,7 +132,14 @@ This is enforced via `Requires=`, `After=`, and `ConditionPath*`.
 * Bootstrap `/home` and `/data` on first boot: format if requested, add
   `/etc/fstab` entries by UUID, mount
 * Set shared `/data` group permissions
-* Optionally configure NVMe swap
+* Create a swapfile on the instance-store NVMe
+
+**Swap sizing.** `SWAP_SIZE_GIB` (default 64) is a fixed size, not a fraction of
+the volume. `/opt/dlami/nvme` is also the shared scratch directory the DLAMI
+provides at mode 1777, and ext4 reserves 5% for root, so a swapfile sized as a
+large fraction of the total leaves non-root users **zero** bytes of scratch
+there. The script refuses to create one larger than 80% of the volume rather
+than filling it.
 
 **On an already-configured host this unit is a fast no-op.** Every mount it
 manages is in `/etc/fstab` by UUID and is mounted by systemd before this unit

@@ -23,9 +23,16 @@ set -euo pipefail
 #   ALLOW_HOME_MIGRATION=1  permit the one-time rootfs /home -> EBS copy
 #   HOME_DEV / DATA_DEV     fallback device paths, used only when the mount is
 #                           absent from fstab and not already mounted
+#   SWAP_SIZE_GIB           swapfile size on the instance-store NVMe (default 64)
 
 ALLOW_MKFS="${ALLOW_MKFS:-0}"
 ALLOW_HOME_MIGRATION="${ALLOW_HOME_MIGRATION:-0}"
+
+# A fixed size, not a fraction of the volume. /opt/dlami/nvme is also the shared
+# scratch directory the DLAMI provides (mode 1777), so a swapfile taking most of
+# it leaves nothing writable there. 64 GiB is 4x this instance's RAM, which is
+# ample insurance against a notebook briefly overrunning memory.
+SWAP_SIZE_GIB="${SWAP_SIZE_GIB:-64}"
 
 HOME_DEV="${HOME_DEV:-/dev/nvme1n1}"
 DATA_DEV="${DATA_DEV:-/dev/nvme2n1}"
@@ -120,17 +127,21 @@ setup_swap_nvme() {
     mkswap "$swapfile"
     swapon "$swapfile"
   else
-    local total_bytes
+    local total_bytes swap_bytes
     total_bytes=$(df --output=size -B1 "$mnt" | tail -n1 | tr -d ' ')
     if [ -z "$total_bytes" ] || [ "$total_bytes" -le 0 ]; then
       warn "Unable to determine filesystem size for $mnt; skipping swapfile setup."
       return
     fi
-    # 95% leaves the volume effectively full. Kept as-is to avoid changing the
-    # existing swap size on a running host, but see the note in README: this is
-    # why /opt/dlami/nvme reports 0 bytes available.
-    local swap_bytes=$(( total_bytes * 95 / 100 ))
-    log "Creating swapfile of size $swap_bytes bytes at $swapfile..."
+    swap_bytes=$(( SWAP_SIZE_GIB * 1024 * 1024 * 1024 ))
+    # Refuse rather than fill the volume. This mount is also the shared scratch
+    # directory (mode 1777), and ext4 reserves 5% for root, so a swapfile sized
+    # as a large fraction of the total leaves non-root users zero bytes there.
+    if [ "$swap_bytes" -gt $(( total_bytes * 80 / 100 )) ]; then
+      warn "SWAP_SIZE_GIB=${SWAP_SIZE_GIB} exceeds 80% of $mnt; skipping swapfile setup."
+      return
+    fi
+    log "Creating ${SWAP_SIZE_GIB}GiB swapfile at $swapfile..."
     fallocate -l "$swap_bytes" "$swapfile"
     chmod 600 "$swapfile"
     mkswap "$swapfile"
