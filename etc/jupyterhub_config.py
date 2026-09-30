@@ -225,6 +225,49 @@ def ensure_home_quota(username: str):
         log.error("Failed to set home quota for %s: %s", username, e)
 
 
+# --- Jupyter runtime dir off /home ---
+#
+# The single-user server and every kernel write their runtime files (server
+# info, kernel connection files) to ~/.local/share/jupyter/runtime by default.
+# A user over their home quota -- past grace on the soft limit, or at the hard
+# limit -- cannot allocate a block there, so kernels fail to start and the
+# server may not come up at all. Users have no SSH, so the notebook server is
+# their only shell: without it they cannot delete anything to get back under
+# quota, and a quota lockout becomes an admin ticket every time.
+#
+# Putting the runtime dir on /run (tmpfs, not quota'd) keeps the server and a
+# terminal reachable whatever the home usage. Root creates it here so a user
+# cannot pre-plant another user's directory the way they could under /tmp.
+RUNTIME_ROOT = os.environ.get("JH_RUNTIME_ROOT", "/run/jupyter")
+
+
+def ensure_runtime_dir(username: str):
+    runtime_dir = os.path.join(RUNTIME_ROOT, username)
+    try:
+        _run("install", "-d", "-o", "root", "-g", "root", "-m", "0755", RUNTIME_ROOT)
+        _run("install", "-d", "-o", username, "-g", username, "-m", "0700", runtime_dir)
+    except Exception as e:
+        # Not fatal: fall back to Jupyter's default under ~ rather than refuse
+        # the spawn.
+        log.error("Failed to ensure runtime dir for %s at %s: %s", username, runtime_dir, e)
+        return None
+    return runtime_dir
+
+
+def warn_if_over_quota(username: str):
+    # `quota -q` prints only for filesystems where the user is over a limit.
+    # Logged so a failed or crippled spawn is diagnosable from the hub journal.
+    try:
+        out = subprocess.run(
+            ["quota", "-q", "-u", username],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        if out:
+            log.warning("User %s is over home quota: %s", username, " ".join(out.split()))
+    except Exception as e:
+        log.error("Failed to check home quota for %s: %s", username, e)
+
+
 async def _pre_spawn_hook(spawner):
     username = spawner.user.name
     log.info("pre_spawn_hook: provisioning user '%s'", username)
@@ -236,8 +279,12 @@ async def _pre_spawn_hook(spawner):
     ensure_data_dir(username)
     ensure_shared_cache_dir(JUPYTER_GROUP)
     ensure_home_quota(username)
+    warn_if_over_quota(username)
+    runtime_dir = ensure_runtime_dir(username)
 
     spawner.environment = spawner.environment or {}
+    if runtime_dir:
+        spawner.environment["JUPYTER_RUNTIME_DIR"] = runtime_dir
     spawner.environment["UMASK"] = DEFAULT_UMASK
     spawner.environment["SINGLEUSER_BIN"] = SINGLEUSER_BIN
 
